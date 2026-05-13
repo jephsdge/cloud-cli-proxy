@@ -48,14 +48,14 @@ func (p *ContainerProxyProvider) PrepareHost(ctx context.Context, spec HostNetwo
 	workerIP := fmt.Sprintf("10.99.%d.3", third)
 
 	proxyRaw := spec.Egress.Proxy.OutboundConfig
-	serverIP, _, err := extractProxyServer(proxyRaw)
+	serverIP, err := ResolveGatewayProxyServerIP(proxyRaw, spec.Egress.GatewayConfig)
 	if err != nil {
 		return fmt.Errorf("gateway: resolve proxy server: %w", err)
 	}
 
 	dnsServer := spec.Egress.Proxy.DNSServer
 
-	configJSON, err := buildGatewaySingBoxConfig(proxyRaw, dnsServer, serverIP)
+	configJSON, err := BuildGatewaySingBoxConfig(proxyRaw, spec.Egress.GatewayConfig, dnsServer, serverIP)
 	if err != nil {
 		return fmt.Errorf("gateway: build sing-box config: %w", err)
 	}
@@ -63,11 +63,11 @@ func (p *ContainerProxyProvider) PrepareHost(ctx context.Context, spec HostNetwo
 	// Clean up any previous attempt for this host (会删配置目录，必须在写入之前)
 	p.teardownGateway(ctx, hostID)
 
-	configDir := gatewayConfigDir(hostID)
+	configDir := GatewayConfigDir(hostID)
 	if err := os.MkdirAll(configDir, 0o755); err != nil {
 		return fmt.Errorf("gateway: mkdir config dir: %w", err)
 	}
-	configPath := filepath.Join(configDir, "config.json")
+	configPath := GatewayConfigPath(hostID)
 	if err := os.WriteFile(configPath, configJSON, 0o644); err != nil {
 		return fmt.Errorf("gateway: write config: %w", err)
 	}
@@ -179,7 +179,7 @@ func (p *ContainerProxyProvider) teardownGateway(ctx context.Context, hostID str
 	_ = exec.CommandContext(ctx, "docker", "network", "disconnect", "-f", netName, workerName).Run()
 	_ = exec.CommandContext(ctx, "docker", "rm", "-f", gwName).Run()
 	_ = exec.CommandContext(ctx, "docker", "network", "rm", netName).Run()
-	_ = os.RemoveAll(gatewayConfigDir(hostID))
+	_ = os.RemoveAll(GatewayConfigDir(hostID))
 }
 
 func GatewayImage() string {
@@ -189,12 +189,20 @@ func GatewayImage() string {
 	return "cloud-cli-proxy-sing-gateway:local"
 }
 
-func gatewayConfigDir(hostID string) string {
+func GatewayConfigDir(hostID string) string {
 	base := os.Getenv("DATA_DIR")
 	if base == "" {
 		base = "/var/lib/cloud-cli-proxy"
 	}
 	return filepath.Join(base, "gateway", hostID)
+}
+
+func GatewayConfigPath(hostID string) string {
+	return filepath.Join(GatewayConfigDir(hostID), "config.json")
+}
+
+func gatewayConfigDir(hostID string) string {
+	return GatewayConfigDir(hostID)
 }
 
 func networkName(hostID string) string {

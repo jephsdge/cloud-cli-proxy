@@ -18,16 +18,17 @@ type ProxySpec struct {
 
 // EgressConfig carries the validated egress binding for a host.
 type EgressConfig struct {
-	EgressIPID string     // egress_ips.id
-	ExpectedIP string     // expected egress IP address (e.g. "1.2.3.4")
-	TunnelType string     // "proxy"
-	Proxy      *ProxySpec // proxy config
+	EgressIPID    string          // egress_ips.id
+	ExpectedIP    string          // expected egress IP address (e.g. "1.2.3.4")
+	TunnelType    string          // "proxy"
+	Proxy         *ProxySpec      // proxy config
+	GatewayConfig json.RawMessage // optional host-level sing-box config override
 }
 
 // HostNetworkSpec carries everything the network Provider needs to wire a container.
 type HostNetworkSpec struct {
 	HostID       string
-	ContainerPID uint32        // container init PID, populated after docker start
-	Egress       *EgressConfig // nil when Provider should skip network setup
+	ContainerPID uint32                 // container init PID, populated after docker start
+	Egress       *EgressConfig          // nil when Provider should skip network setup
 	PortMappings []agentapi.PortMapping // host port forwarding (used by iptables DNAT on Linux)
 }

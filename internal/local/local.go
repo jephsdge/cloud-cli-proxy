@@ -205,7 +205,7 @@ func (m *LocalManager) buildCreateArgs(containerName, projectDir, password strin
 		"--hostname", hostname,
 		"--shm-size", "1g",
 		"-e", "MODE=local",
-		"-e", "TZ=" + envOrDefault("TZ", "America/Los_Angeles"),
+		"-e", "TZ=" + envOrDefault("TZ", "America/New_York"),
 		"-e", "LANG=en_US.UTF-8",
 		"-e", "LANGUAGE=en_US:en",
 		"-e", "LC_ALL=en_US.UTF-8",

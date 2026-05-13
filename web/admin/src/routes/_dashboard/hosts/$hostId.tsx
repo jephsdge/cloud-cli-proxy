@@ -53,6 +53,7 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { BindingManager } from "@/components/hosts/binding-manager";
+import { GatewayConfigManager } from "@/components/hosts/gateway-config-manager";
 import { MountManager } from "@/components/hosts/mount-manager";
 import { PortManager } from "@/components/hosts/port-manager";
 import { RotatePasswordDialog } from "@/components/users/rotate-password-dialog";
@@ -391,7 +392,7 @@ function HostDetailPage() {
             </div>
             <div>
               <span className="block text-sm font-semibold">配置详情</span>
-              <span className="text-xs text-muted-foreground">出口 IP 绑定、挂载路径、端口映射</span>
+              <span className="text-xs text-muted-foreground">出口 IP 绑定、挂载路径、端口映射、Gateway 配置</span>
             </div>
           </div>
           <ChevronDown className={`h-4 w-4 text-muted-foreground transition-transform ${configOpen ? "" : "-rotate-90"}`} />
@@ -414,6 +415,11 @@ function HostDetailPage() {
                 <p className="mb-4 text-xs text-muted-foreground">{isRunning ? "运行中不可编辑" : "停止中，可以编辑"}</p>
                 <PortManager hostId={hostId} hostStatus={host.status} ports={host.host_ports ?? []} />
               </div>
+            </div>
+            <div className="mt-5 border-t border-border/40 px-2 pt-5 lg:px-4">
+              <h3 className="mb-1 text-sm font-semibold">Gateway 配置</h3>
+              <p className="mb-4 text-xs text-muted-foreground">按主机覆盖 sing-box 出口或完整配置</p>
+              <GatewayConfigManager hostId={hostId} hostStatus={host.status} />
             </div>
           </div>
         )}

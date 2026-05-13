@@ -12,8 +12,8 @@ import (
 	"time"
 
 	"github.com/zanel1u/cloud-cli-proxy/internal/agentapi"
-	"github.com/zanel1u/cloud-cli-proxy/internal/store/repository"
 	runtimetasks "github.com/zanel1u/cloud-cli-proxy/internal/runtime/tasks"
+	"github.com/zanel1u/cloud-cli-proxy/internal/store/repository"
 )
 
 // mockWorkerRepo 是 WorkerRepo 的最小 mock 实现，用于 agent 层测试。
@@ -35,6 +35,10 @@ func (r *mockWorkerRepo) UpdateHostStatus(_ context.Context, hostID string, stat
 
 func (r *mockWorkerRepo) GetEgressIPByHost(_ context.Context, _ string) (repository.EgressIP, error) {
 	return repository.EgressIP{}, fmt.Errorf("no egress ip configured")
+}
+
+func (r *mockWorkerRepo) GetHostGatewayConfig(_ context.Context, _ string) (json.RawMessage, error) {
+	return nil, nil
 }
 
 func (r *mockWorkerRepo) RecordEvent(_ context.Context, _ repository.RecordEventParams) (repository.Event, error) {

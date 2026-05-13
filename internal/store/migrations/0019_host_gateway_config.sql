@@ -1,0 +1,1 @@
+ALTER TABLE hosts ADD COLUMN IF NOT EXISTS gateway_config JSONB;

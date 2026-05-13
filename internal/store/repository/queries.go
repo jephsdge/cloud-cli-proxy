@@ -1,6 +1,7 @@
 package repository
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -735,7 +736,7 @@ func (r *Repository) GetEgressIPByHost(ctx context.Context, hostID string) (Egre
 
 // getHostSQL 将 SQL 文本提升为包级常量，方便仓储层回归测试断言。
 const getHostSQL = `
-	SELECT id::text, user_id::text, status, COALESCE(short_id, ''), template_image_ref, home_volume_name, slot_key, timezone, hostname, memory_limit_mb, cpu_limit, disk_limit_gb, host_mounts, host_ports, created_at, updated_at
+	SELECT id::text, user_id::text, status, COALESCE(short_id, ''), template_image_ref, home_volume_name, slot_key, timezone, hostname, memory_limit_mb, cpu_limit, disk_limit_gb, host_mounts, host_ports, gateway_config, created_at, updated_at
 	FROM hosts
 	WHERE id = $1
 `
@@ -744,6 +745,7 @@ func (r *Repository) GetHost(ctx context.Context, hostID string) (Host, error) {
 	var item Host
 	var rawMounts json.RawMessage
 	var rawPorts json.RawMessage
+	var rawGatewayConfig json.RawMessage
 	if err := r.db.QueryRow(ctx, getHostSQL, hostID).Scan(
 		&item.ID,
 		&item.UserID,
@@ -759,6 +761,7 @@ func (r *Repository) GetHost(ctx context.Context, hostID string) (Host, error) {
 		&item.DiskLimitGB,
 		&rawMounts,
 		&rawPorts,
+		&rawGatewayConfig,
 		&item.CreatedAt,
 		&item.UpdatedAt,
 	); err != nil {
@@ -769,6 +772,10 @@ func (r *Repository) GetHost(ctx context.Context, hostID string) (Host, error) {
 	}
 	if len(rawPorts) > 0 {
 		_ = json.Unmarshal(rawPorts, &item.HostPorts)
+	}
+	rawGatewayConfig = bytes.TrimSpace(rawGatewayConfig)
+	if len(rawGatewayConfig) > 0 && !bytes.Equal(rawGatewayConfig, []byte("null")) {
+		item.GatewayConfig = rawGatewayConfig
 	}
 
 	return item, nil
@@ -1547,6 +1554,41 @@ func (r *Repository) UpdateHostPorts(ctx context.Context, hostID string, ports H
 	}
 	_, err = r.db.Exec(ctx, `UPDATE hosts SET host_ports = $1, updated_at = NOW() WHERE id = $2`, data, hostID)
 	return err
+}
+
+func (r *Repository) UpdateHostGatewayConfig(ctx context.Context, hostID string, config json.RawMessage) error {
+	config = bytes.TrimSpace(config)
+	if len(config) == 0 || bytes.Equal(config, []byte("null")) {
+		tag, err := r.db.Exec(ctx, `UPDATE hosts SET gateway_config = NULL, updated_at = NOW() WHERE id = $1`, hostID)
+		if err != nil {
+			return fmt.Errorf("clear host gateway config: %w", err)
+		}
+		if tag.RowsAffected() == 0 {
+			return pgx.ErrNoRows
+		}
+		return nil
+	}
+
+	tag, err := r.db.Exec(ctx, `UPDATE hosts SET gateway_config = $1, updated_at = NOW() WHERE id = $2`, config, hostID)
+	if err != nil {
+		return fmt.Errorf("update host gateway config: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return pgx.ErrNoRows
+	}
+	return nil
+}
+
+func (r *Repository) GetHostGatewayConfig(ctx context.Context, hostID string) (json.RawMessage, error) {
+	var raw json.RawMessage
+	if err := r.db.QueryRow(ctx, `SELECT gateway_config FROM hosts WHERE id = $1`, hostID).Scan(&raw); err != nil {
+		return nil, fmt.Errorf("get host gateway config: %w", err)
+	}
+	raw = bytes.TrimSpace(raw)
+	if len(raw) == 0 || bytes.Equal(raw, []byte("null")) {
+		return nil, nil
+	}
+	return raw, nil
 }
 
 func (r *Repository) GetSSHKey(ctx context.Context, keyID string) (SSHKey, error) {

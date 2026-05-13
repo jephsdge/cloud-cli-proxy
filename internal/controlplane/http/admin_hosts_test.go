@@ -77,6 +77,10 @@ func (s *stubHostStore) UpdateHostPorts(_ context.Context, _ string, _ repositor
 	return nil
 }
 
+func (s *stubHostStore) UpdateHostGatewayConfig(_ context.Context, _ string, _ json.RawMessage) error {
+	return nil
+}
+
 func TestAdminHostsHandler(t *testing.T) {
 	now := time.Now().Truncate(time.Second)
 	sampleHost := repository.HostWithUsername{
@@ -235,6 +239,85 @@ func TestAdminHostsHandler(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestBuildEffectiveGatewayConfig_HostOutboundOverride(t *testing.T) {
+	detail := repository.HostDetail{
+		Host: repository.Host{ID: "h1"},
+		Bindings: []repository.BindingWithIP{{
+			EgressIP: repository.EgressIP{
+				ProxyConfig: json.RawMessage(`{"type":"socks","server":"1.2.3.4","server_port":1080,"dns_server":"1.1.1.1"}`),
+			},
+		}},
+	}
+
+	effective, err := buildEffectiveGatewayConfig(detail, json.RawMessage(`{"type":"trojan","server":"5.6.7.8","server_port":443,"password":"secret","dns_server":"9.9.9.9"}`))
+	if err != nil {
+		t.Fatalf("build effective config: %v", err)
+	}
+
+	var cfg map[string]any
+	if err := json.Unmarshal(effective, &cfg); err != nil {
+		t.Fatalf("decode effective config: %v", err)
+	}
+
+	route := cfg["route"].(map[string]any)
+	if got := route["final"]; got != "proxy-out" {
+		t.Fatalf("route.final=%v, want proxy-out", got)
+	}
+
+	outbounds := cfg["outbounds"].([]any)
+	first := outbounds[0].(map[string]any)
+	if got := first["type"]; got != "trojan" {
+		t.Fatalf("first outbound type=%v, want trojan", got)
+	}
+	if got := first["tag"]; got != "proxy-out" {
+		t.Fatalf("first outbound tag=%v, want proxy-out", got)
+	}
+
+	dns := cfg["dns"].(map[string]any)
+	servers := dns["servers"].([]any)
+	if got := servers[0].(map[string]any)["server"]; got != "9.9.9.9" {
+		t.Fatalf("dns server=%v, want 9.9.9.9", got)
+	}
+}
+
+func TestBuildEffectiveGatewayConfig_FullConfigPreservesCustomFinal(t *testing.T) {
+	detail := repository.HostDetail{
+		Host: repository.Host{ID: "h1"},
+		Bindings: []repository.BindingWithIP{{
+			EgressIP: repository.EgressIP{
+				ProxyConfig: json.RawMessage(`{"type":"socks","server":"1.2.3.4","server_port":1080,"dns_server":"1.1.1.1"}`),
+			},
+		}},
+	}
+
+	full := json.RawMessage(`{
+		"inbounds": [{"type":"tun","tag":"tun-in","address":["172.19.0.1/30"],"auto_route":true}],
+		"outbounds": [{"type":"socks","tag":"custom-out","server":"5.6.7.8","server_port":1080}],
+		"route": {"final":"custom-out","rules":[]}
+	}`)
+	effective, err := buildEffectiveGatewayConfig(detail, full)
+	if err != nil {
+		t.Fatalf("build effective config: %v", err)
+	}
+
+	var cfg map[string]any
+	if err := json.Unmarshal(effective, &cfg); err != nil {
+		t.Fatalf("decode effective config: %v", err)
+	}
+
+	route := cfg["route"].(map[string]any)
+	if got := route["final"]; got != "custom-out" {
+		t.Fatalf("route.final=%v, want custom-out", got)
+	}
+	outbounds := cfg["outbounds"].([]any)
+	for _, item := range outbounds {
+		m := item.(map[string]any)
+		if m["tag"] == "proxy-out" {
+			t.Fatal("full gateway config must not inject proxy-out")
+		}
 	}
 }
 

@@ -3,6 +3,7 @@ package tasks
 import (
 	"bufio"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -42,6 +43,7 @@ type WorkerRepo interface {
 	UpdateTaskStatus(context.Context, string, string, string, string, string) (repository.Task, error)
 	UpdateHostStatus(ctx context.Context, hostID string, status string) error
 	GetEgressIPByHost(ctx context.Context, hostID string) (repository.EgressIP, error)
+	GetHostGatewayConfig(ctx context.Context, hostID string) (json.RawMessage, error)
 	RecordEvent(ctx context.Context, params repository.RecordEventParams) (repository.Event, error)
 	UpsertClaudeAccountPersistentVolumeName(ctx context.Context, accountID, volumeName string) error // Phase 33 D-06
 	ReportTaskProgress(ctx context.Context, taskID string, percent int, message string) error
@@ -269,7 +271,7 @@ func (w *Worker) buildCreateArgs(request agentapi.HostActionRequest, containerNa
 
 	linuxUser := firstNonEmpty(request.DefaultUser, "workspace")
 	args = append(args,
-		"-e", "TZ="+firstNonEmpty(request.Timezone, "America/Los_Angeles"),
+		"-e", "TZ="+firstNonEmpty(request.Timezone, "America/New_York"),
 		"-e", "LANG=en_US.UTF-8",
 		"-e", "LANGUAGE=en_US:en",
 		"-e", "LC_ALL=en_US.UTF-8",
@@ -574,6 +576,11 @@ func (w *Worker) buildEgressConfig(ctx context.Context, hostID string) (*network
 		w.recordNetworkError(ctx, hostID, err)
 		return nil, err
 	}
+	gatewayConfig, err := w.repo.GetHostGatewayConfig(ctx, hostID)
+	if err != nil {
+		return nil, fmt.Errorf("get host gateway config: %w", err)
+	}
+	cfg.GatewayConfig = gatewayConfig
 	return &cfg, nil
 }
 

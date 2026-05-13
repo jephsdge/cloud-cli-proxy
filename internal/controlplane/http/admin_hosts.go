@@ -11,6 +11,7 @@ import (
 	"log/slog"
 	"math/big"
 	nethttp "net/http"
+	"os"
 	"os/exec"
 	"strconv"
 	"strings"
@@ -20,6 +21,7 @@ import (
 
 	"github.com/zanel1u/cloud-cli-proxy/internal/agentapi"
 	"github.com/zanel1u/cloud-cli-proxy/internal/controlplane/credgen"
+	"github.com/zanel1u/cloud-cli-proxy/internal/network"
 	"github.com/zanel1u/cloud-cli-proxy/internal/runtime"
 	"github.com/zanel1u/cloud-cli-proxy/internal/store/repository"
 )
@@ -41,6 +43,7 @@ type AdminHostStore interface {
 	GetHostWithClaudeAccount(ctx context.Context, hostID string) (repository.HostWithClaudeAccount, error) // Phase 33 D-22
 	UpdateHostMounts(ctx context.Context, hostID string, mounts repository.HostMounts) error
 	UpdateHostPorts(ctx context.Context, hostID string, ports repository.HostPorts) error
+	UpdateHostGatewayConfig(ctx context.Context, hostID string, config json.RawMessage) error
 }
 
 type AdminHostsHandler struct {
@@ -168,7 +171,7 @@ func (h *AdminHostsHandler) Create() nethttp.Handler {
 
 		timezone := body.Timezone
 		if timezone == "" {
-			timezone = "America/Los_Angeles"
+			timezone = "America/New_York"
 		}
 		hostname := generateHostname()
 		hostShortID := credgen.GenerateShortID()
@@ -1057,7 +1060,7 @@ func (h *AdminHostsHandler) UpdateMounts() nethttp.Handler {
 			hid := hostID
 			if _, err := h.events.RecordEvent(r.Context(), repository.RecordEventParams{
 				HostID: &hid, Level: "info", Type: "admin.host.update_mounts",
-				Message: "管理员更新主机挂载配置",
+				Message:  "管理员更新主机挂载配置",
 				Metadata: map[string]any{"operator": "admin", "mount_count": len(body.Mounts)},
 			}); err != nil {
 				h.logger.Error("record event failed", "type", "admin.host.update_mounts", "error", err)
@@ -1100,7 +1103,7 @@ func (h *AdminHostsHandler) UpdatePorts() nethttp.Handler {
 			hid := hostID
 			if _, err := h.events.RecordEvent(r.Context(), repository.RecordEventParams{
 				HostID: &hid, Level: "info", Type: "admin.host.update_ports",
-				Message: "管理员更新主机端口映射配置",
+				Message:  "管理员更新主机端口映射配置",
 				Metadata: map[string]any{"operator": "admin", "port_count": len(body.Ports)},
 			}); err != nil {
 				h.logger.Error("record event failed", "type", "admin.host.update_ports", "error", err)
@@ -1108,6 +1111,239 @@ func (h *AdminHostsHandler) UpdatePorts() nethttp.Handler {
 		}
 		writeJSON(w, nethttp.StatusOK, map[string]string{"status": "ok"})
 	})
+}
+
+type hostGatewayConfigResponse struct {
+	HostID          string          `json:"host_id"`
+	GatewayConfig   json.RawMessage `json:"gateway_config"`
+	EffectiveConfig json.RawMessage `json:"effective_config"`
+	Source          string          `json:"source"`
+	Applied         bool            `json:"applied"`
+}
+
+func (h *AdminHostsHandler) GetGatewayConfig() nethttp.Handler {
+	return nethttp.HandlerFunc(func(w nethttp.ResponseWriter, r *nethttp.Request) {
+		hostID := r.PathValue("hostID")
+		detail, err := h.store.GetHostDetail(r.Context(), hostID)
+		if err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				writeJSON(w, nethttp.StatusNotFound, map[string]string{"error": "host not found"})
+				return
+			}
+			h.logger.Error("get host gateway config failed", "host_id", hostID, "error", err)
+			writeJSON(w, nethttp.StatusInternalServerError, map[string]string{"error": "get gateway config failed"})
+			return
+		}
+
+		effective, err := buildEffectiveGatewayConfig(detail, detail.Host.GatewayConfig)
+		if err != nil {
+			writeJSON(w, nethttp.StatusBadRequest, map[string]string{"error": err.Error()})
+			return
+		}
+
+		writeJSON(w, nethttp.StatusOK, hostGatewayConfigResponse{
+			HostID:          hostID,
+			GatewayConfig:   nullableRaw(detail.Host.GatewayConfig),
+			EffectiveConfig: effective,
+			Source:          gatewayConfigSource(detail.Host.GatewayConfig),
+		})
+	})
+}
+
+func (h *AdminHostsHandler) UpdateGatewayConfig() nethttp.Handler {
+	return nethttp.HandlerFunc(func(w nethttp.ResponseWriter, r *nethttp.Request) {
+		hostID := r.PathValue("hostID")
+		var body struct {
+			GatewayConfig json.RawMessage `json:"gateway_config"`
+			Config        json.RawMessage `json:"config"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			writeJSON(w, nethttp.StatusBadRequest, map[string]string{"error": "invalid request body"})
+			return
+		}
+
+		raw := body.GatewayConfig
+		if len(raw) == 0 {
+			raw = body.Config
+		}
+		if len(raw) == 0 {
+			writeJSON(w, nethttp.StatusBadRequest, map[string]string{"error": "gateway_config is required; use null to clear override"})
+			return
+		}
+		if string(raw) != "null" && !json.Valid(raw) {
+			writeJSON(w, nethttp.StatusBadRequest, map[string]string{"error": "gateway_config must be valid JSON"})
+			return
+		}
+
+		detail, err := h.store.GetHostDetail(r.Context(), hostID)
+		if err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				writeJSON(w, nethttp.StatusNotFound, map[string]string{"error": "host not found"})
+				return
+			}
+			h.logger.Error("get host for gateway config failed", "host_id", hostID, "error", err)
+			writeJSON(w, nethttp.StatusInternalServerError, map[string]string{"error": "get host failed"})
+			return
+		}
+
+		effective, err := buildEffectiveGatewayConfig(detail, raw)
+		if err != nil {
+			writeJSON(w, nethttp.StatusBadRequest, map[string]string{"error": err.Error()})
+			return
+		}
+
+		applied := false
+		if detail.Host.Status == "running" {
+			if err := applyRunningGatewayConfig(r.Context(), hostID, effective); err != nil {
+				h.logger.Error("apply running gateway config failed", "host_id", hostID, "error", err)
+				writeJSON(w, nethttp.StatusBadGateway, map[string]string{"error": "apply gateway config failed: " + err.Error()})
+				return
+			}
+			applied = true
+		}
+
+		if err := h.store.UpdateHostGatewayConfig(r.Context(), hostID, raw); err != nil {
+			if applied {
+				if previous, buildErr := buildEffectiveGatewayConfig(detail, detail.Host.GatewayConfig); buildErr == nil {
+					if rollbackErr := applyRunningGatewayConfig(context.Background(), hostID, previous); rollbackErr != nil {
+						h.logger.Error("rollback running gateway config after db failure failed", "host_id", hostID, "error", rollbackErr)
+					}
+				}
+			}
+			if errors.Is(err, pgx.ErrNoRows) {
+				writeJSON(w, nethttp.StatusNotFound, map[string]string{"error": "host not found"})
+				return
+			}
+			h.logger.Error("update host gateway config failed", "host_id", hostID, "error", err)
+			writeJSON(w, nethttp.StatusInternalServerError, map[string]string{"error": "update gateway config failed"})
+			return
+		}
+
+		if h.events != nil {
+			hid := hostID
+			if _, err := h.events.RecordEvent(r.Context(), repository.RecordEventParams{
+				HostID: &hid, Level: "info", Type: "admin.host.gateway_config_updated",
+				Message:  "管理员更新主机 gateway sing-box 配置",
+				Metadata: map[string]any{"operator": "admin", "source": gatewayConfigSource(raw), "applied": applied},
+			}); err != nil {
+				h.logger.Error("record event failed", "type", "admin.host.gateway_config_updated", "error", err)
+			}
+		}
+
+		writeJSON(w, nethttp.StatusOK, hostGatewayConfigResponse{
+			HostID:          hostID,
+			GatewayConfig:   nullableRaw(raw),
+			EffectiveConfig: effective,
+			Source:          gatewayConfigSource(raw),
+			Applied:         applied,
+		})
+	})
+}
+
+func buildEffectiveGatewayConfig(detail repository.HostDetail, gatewayConfig json.RawMessage) (json.RawMessage, error) {
+	if len(detail.Bindings) == 0 {
+		return nil, fmt.Errorf("host has no egress binding")
+	}
+	proxyRaw := detail.Bindings[0].EgressIP.ProxyConfig
+	if len(proxyRaw) == 0 {
+		return nil, fmt.Errorf("bound egress IP has empty proxy_config")
+	}
+
+	dnsServer := gatewayDNSServer(proxyRaw)
+	serverIP, err := network.ResolveGatewayProxyServerIP(proxyRaw, gatewayConfig)
+	if err != nil {
+		return nil, fmt.Errorf("resolve gateway proxy server: %w", err)
+	}
+	cfg, err := network.BuildGatewaySingBoxConfig(proxyRaw, gatewayConfig, dnsServer, serverIP)
+	if err != nil {
+		return nil, err
+	}
+	return json.RawMessage(cfg), nil
+}
+
+func gatewayDNSServer(raw json.RawMessage) string {
+	var parsed map[string]any
+	if err := json.Unmarshal(raw, &parsed); err != nil {
+		return ""
+	}
+	dnsServer, _ := parsed["dns_server"].(string)
+	return dnsServer
+}
+
+func gatewayConfigSource(raw json.RawMessage) string {
+	raw = bytes.TrimSpace(raw)
+	if len(raw) == 0 || bytes.Equal(raw, []byte("null")) {
+		return "egress_binding"
+	}
+	var parsed map[string]any
+	if err := json.Unmarshal(raw, &parsed); err != nil {
+		return "host_override"
+	}
+	if _, ok := parsed["inbounds"]; ok {
+		return "host_full_config"
+	}
+	if _, ok := parsed["outbounds"]; ok {
+		return "host_full_config"
+	}
+	if _, ok := parsed["route"]; ok {
+		return "host_full_config"
+	}
+	return "host_outbound_override"
+}
+
+func nullableRaw(raw json.RawMessage) json.RawMessage {
+	raw = bytes.TrimSpace(raw)
+	if len(raw) == 0 {
+		return json.RawMessage("null")
+	}
+	return raw
+}
+
+var applyRunningGatewayConfig = func(ctx context.Context, hostID string, config []byte) error {
+	configDir := network.GatewayConfigDir(hostID)
+	if err := os.MkdirAll(configDir, 0o755); err != nil {
+		return fmt.Errorf("mkdir gateway config dir: %w", err)
+	}
+	configPath := network.GatewayConfigPath(hostID)
+	previous, previousErr := os.ReadFile(configPath)
+	if err := os.WriteFile(configPath, config, 0o644); err != nil {
+		return fmt.Errorf("write gateway config: %w", err)
+	}
+
+	gwName := "cloudproxy-gw-" + hostID
+	restartAndCheck := func() error {
+		cmd := exec.CommandContext(ctx, "docker", "restart", gwName)
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			return fmt.Errorf("docker restart %s: %s: %w", gwName, strings.TrimSpace(string(out)), err)
+		}
+		time.Sleep(500 * time.Millisecond)
+
+		inspect := exec.CommandContext(ctx, "docker", "inspect", "-f", "{{.State.Running}}", gwName)
+		running, inspectErr := inspect.Output()
+		if inspectErr == nil && strings.TrimSpace(string(running)) == "true" {
+			return nil
+		}
+		logs, _ := exec.CommandContext(ctx, "docker", "logs", "--tail", "120", gwName).CombinedOutput()
+		if inspectErr != nil {
+			return fmt.Errorf("inspect restarted gateway: %w; logs: %s", inspectErr, strings.TrimSpace(string(logs)))
+		}
+		return fmt.Errorf("gateway is not running after restart; logs: %s", strings.TrimSpace(string(logs)))
+	}
+
+	if err := restartAndCheck(); err != nil {
+		if previousErr != nil {
+			return err
+		}
+		if rollbackWriteErr := os.WriteFile(configPath, previous, 0o644); rollbackWriteErr != nil {
+			return fmt.Errorf("%w; rollback write failed: %v", err, rollbackWriteErr)
+		}
+		if rollbackErr := restartAndCheck(); rollbackErr != nil {
+			return fmt.Errorf("%w; rollback restart failed: %v", err, rollbackErr)
+		}
+		return fmt.Errorf("%w; previous gateway config restored", err)
+	}
+	return nil
 }
 
 // syncContainerPassword updates the Linux user password inside a running container via docker exec.

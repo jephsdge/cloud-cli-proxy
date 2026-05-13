@@ -26,36 +26,36 @@ type AgentHealthChecker interface {
 }
 
 type Dependencies struct {
-	Logger          *slog.Logger
-	Health          HealthChecker
-	AgentHealth     AgentHealthChecker
-	Users           UserLister
-	Hosts           HostLister
-	HostActions     HostActionQueuer
-	Tasks           TaskLister
-	TasksHandler    nethttp.Handler
-	BootstrapUsers  BootstrapUserLookup
-	BootstrapHosts  BootstrapHostLookup
-	BootstrapTasks  TaskGetter
-	BootstrapEvents EventLister
-	ScriptPath      string
-	Admin           *repository.AdminConfig
-	AuthStore       AuthUserStore
-	DashboardStats  DashboardStatsGetter
-	AdminUsers      AdminUserStore
-	AdminEgressIPs  AdminEgressIPStore
-	AdminBindings   AdminBindingStore
+	Logger              *slog.Logger
+	Health              HealthChecker
+	AgentHealth         AgentHealthChecker
+	Users               UserLister
+	Hosts               HostLister
+	HostActions         HostActionQueuer
+	Tasks               TaskLister
+	TasksHandler        nethttp.Handler
+	BootstrapUsers      BootstrapUserLookup
+	BootstrapHosts      BootstrapHostLookup
+	BootstrapTasks      TaskGetter
+	BootstrapEvents     EventLister
+	ScriptPath          string
+	Admin               *repository.AdminConfig
+	AuthStore           AuthUserStore
+	DashboardStats      DashboardStatsGetter
+	AdminUsers          AdminUserStore
+	AdminEgressIPs      AdminEgressIPStore
+	AdminBindings       AdminBindingStore
 	AdminHosts          AdminHostStore
 	AdminClaudeAccounts AdminClaudeAccountStore // Phase 33 D-17
 	AgentClient         HostActionRunner        // Phase 33 D-17 — interface 兼容 embedded + 远端两种模式
 	AdminEvents         AdminEventStore
-	EventRecorder   EventRecorder
-	EntryStore      EntryStore
-	EntryBaseURL    string
-	ImageLockPath   string
-	UserHosts       UserHostStore
-	SSHKeys         SSHKeyStore
-	ImageCache      ImageCacheManager
+	EventRecorder       EventRecorder
+	EntryStore          EntryStore
+	EntryBaseURL        string
+	ImageLockPath       string
+	UserHosts           UserHostStore
+	SSHKeys             SSHKeyStore
+	ImageCache          ImageCacheManager
 }
 
 type HealthChecker interface {
@@ -258,6 +258,8 @@ func NewRouter(deps Dependencies) nethttp.Handler {
 			mux.Handle("DELETE /v1/admin/hosts/{hostID}", adminGuard(hostsHandler.Delete()))
 			mux.Handle("PUT /v1/admin/hosts/{hostID}/mounts", adminGuard(hostsHandler.UpdateMounts()))
 			mux.Handle("PUT /v1/admin/hosts/{hostID}/ports", adminGuard(hostsHandler.UpdatePorts()))
+			mux.Handle("GET /v1/admin/hosts/{hostID}/gateway/config", adminGuard(hostsHandler.GetGatewayConfig()))
+			mux.Handle("PUT /v1/admin/hosts/{hostID}/gateway/config", adminGuard(hostsHandler.UpdateGatewayConfig()))
 
 			vncProxy := NewAdminVNCProxyHandler(deps.Logger, deps.AdminHosts)
 			// VNC 入口页 (vnc.html) 带 ?token= 认证；子资源（CSS/JS/图片）
@@ -270,11 +272,11 @@ func NewRouter(deps Dependencies) nethttp.Handler {
 			mux.Handle("DELETE /v1/admin/claude-accounts/{accountID}", adminGuard(claudeHandler.Delete()))
 		}
 
-			if deps.ImageCache != nil {
-				imageHandler := NewAdminImageHandler(deps.Logger, deps.ImageCache)
-				mux.Handle("GET /v1/admin/image/status", adminGuard(imageHandler.Status()))
-				mux.Handle("POST /v1/admin/image/refresh", adminGuard(imageHandler.Refresh()))
-			}
+		if deps.ImageCache != nil {
+			imageHandler := NewAdminImageHandler(deps.Logger, deps.ImageCache)
+			mux.Handle("GET /v1/admin/image/status", adminGuard(imageHandler.Status()))
+			mux.Handle("POST /v1/admin/image/refresh", adminGuard(imageHandler.Refresh()))
+		}
 
 		if deps.AdminEvents != nil {
 			eventsHandler := NewAdminEventsHandler(deps.Logger, deps.AdminEvents)

@@ -2,6 +2,7 @@ package tasks
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -78,6 +79,10 @@ func (r *fakeWorkerRepo) UpdateHostStatus(_ context.Context, _ string, _ string)
 
 func (r *fakeWorkerRepo) GetEgressIPByHost(_ context.Context, _ string) (repository.EgressIP, error) {
 	return repository.EgressIP{}, nil
+}
+
+func (r *fakeWorkerRepo) GetHostGatewayConfig(_ context.Context, _ string) (json.RawMessage, error) {
+	return nil, nil
 }
 
 func (r *fakeWorkerRepo) RecordEvent(_ context.Context, params repository.RecordEventParams) (repository.Event, error) {

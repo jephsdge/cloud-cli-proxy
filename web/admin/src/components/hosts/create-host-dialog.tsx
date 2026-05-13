@@ -32,7 +32,7 @@ interface CreateHostDialogProps {
 
 const TIMEZONE_OPTIONS = [
   { value: "America/Los_Angeles", label: "美西 / 洛杉矶", offset: "UTC-8" },
-  { value: "America/New_York", label: "美东 / 纽约", offset: "UTC-5" },
+  { value: "America/New_York", label: "美东 / 纽约", offset: "UTC-5/UTC-4" },
   { value: "America/Chicago", label: "美中 / 芝加哥", offset: "UTC-6" },
   { value: "America/Denver", label: "山区 / 丹佛", offset: "UTC-7" },
   { value: "Europe/London", label: "伦敦", offset: "UTC+0" },
@@ -83,7 +83,7 @@ export function CreateHostDialog({
 }: CreateHostDialogProps) {
   const [userId, setUserId] = useState("");
   const [egressIpId, setEgressIpId] = useState("");
-  const [timezone, setTimezone] = useState("America/Los_Angeles");
+  const [timezone, setTimezone] = useState("America/New_York");
   const [hostMounts, setHostMounts] = useState<Array<{ source: string; target: string }>>([
     { source: "", target: "" },
   ]);
@@ -158,7 +158,7 @@ export function CreateHostDialog({
   function handleClose() {
     setUserId("");
     setEgressIpId("");
-    setTimezone("America/Los_Angeles");
+    setTimezone("America/New_York");
     setHostMounts([{ source: "", target: "" }]);
     setHostPorts([{ host_port: "", container_port: "" }]);
     setTaskId(null);

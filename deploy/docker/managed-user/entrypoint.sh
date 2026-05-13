@@ -9,6 +9,13 @@ CHROMIUM_LOG="${LOG_DIR}/chromium.log"
 DESKTOP_DIR=/workspace/Desktop
 PCMANFM_PROFILE_DIR=/workspace/.config/pcmanfm/default
 
+prepare_timezone() {
+  if [ -n "${TZ:-}" ] && [ -f "/usr/share/zoneinfo/${TZ}" ]; then
+    ln -snf "/usr/share/zoneinfo/${TZ}" /etc/localtime
+    echo "${TZ}" > /etc/timezone
+  fi
+}
+
 write_desktop_config() {
   mkdir -p "${DESKTOP_DIR}" "${PCMANFM_PROFILE_DIR}" /workspace/.chrome-data
 
@@ -151,6 +158,8 @@ assert_tmux_version() {
       ;;
   esac
 }
+
+prepare_timezone
 
 # SSH setup
 mkdir -p /var/run/sshd

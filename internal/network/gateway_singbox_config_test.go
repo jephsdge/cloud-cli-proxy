@@ -73,6 +73,92 @@ func TestBuildGatewaySingBoxConfig_DefaultDNS(t *testing.T) {
 	}
 }
 
+func TestBuildGatewaySingBoxConfig_OutboundOverride(t *testing.T) {
+	base := json.RawMessage(`{"type":"socks","server":"1.2.3.4","server_port":1080}`)
+	override := json.RawMessage(`{"type":"trojan","server":"5.6.7.8","server_port":443,"password":"secret","dns_server":"9.9.9.9"}`)
+	cfg, err := BuildGatewaySingBoxConfig(base, override, "1.1.1.1", "5.6.7.8")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	var parsed map[string]any
+	if err := json.Unmarshal(cfg, &parsed); err != nil {
+		t.Fatalf("output is not valid JSON: %v", err)
+	}
+
+	dns := parsed["dns"].(map[string]any)
+	servers := dns["servers"].([]any)
+	if got := servers[0].(map[string]any)["server"]; got != "9.9.9.9" {
+		t.Fatalf("dns server = %v, want 9.9.9.9", got)
+	}
+
+	outbounds := parsed["outbounds"].([]any)
+	first := outbounds[0].(map[string]any)
+	if got := first["type"]; got != "trojan" {
+		t.Fatalf("first outbound type = %v, want trojan", got)
+	}
+	if got := first["tag"]; got != "proxy-out" {
+		t.Fatalf("override outbound must still be tagged proxy-out, got %v", got)
+	}
+}
+
+func TestBuildGatewaySingBoxConfig_FullConfigDoesNotRequireProxyOut(t *testing.T) {
+	base := json.RawMessage(`{"type":"socks","server":"1.2.3.4","server_port":1080}`)
+	full := json.RawMessage(`{
+		"log": {"level": "debug"},
+		"inbounds": [
+			{"type": "tun", "tag": "tun-in", "address": ["172.19.0.1/30"], "auto_route": true}
+		],
+		"outbounds": [
+			{"type": "socks", "tag": "custom-out", "server": "8.8.8.8", "server_port": 1080}
+		],
+		"route": {"final": "custom-out", "rules": []}
+	}`)
+	cfg, err := BuildGatewaySingBoxConfig(base, full, "1.1.1.1", "")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	var parsed map[string]any
+	if err := json.Unmarshal(cfg, &parsed); err != nil {
+		t.Fatalf("output is not valid JSON: %v", err)
+	}
+
+	route := parsed["route"].(map[string]any)
+	if got := route["final"]; got != "custom-out" {
+		t.Fatalf("route.final = %v, want custom-out", got)
+	}
+	if got := route["auto_detect_interface"]; got != true {
+		t.Fatalf("auto_detect_interface = %v, want true", got)
+	}
+
+	outbounds := parsed["outbounds"].([]any)
+	if len(outbounds) != 2 {
+		t.Fatalf("outbounds length = %d, want custom-out + injected direct", len(outbounds))
+	}
+	if hasProxyOut := hasOutboundTag(outbounds, "proxy-out"); hasProxyOut {
+		t.Fatal("full custom config should not inject proxy-out")
+	}
+
+	rules := route["rules"].([]any)
+	if len(rules) < 2 {
+		t.Fatalf("expected injected safety rules, got %v", rules)
+	}
+}
+
+func TestBuildGatewaySingBoxConfig_FullConfigRequiresTunInbound(t *testing.T) {
+	base := json.RawMessage(`{"type":"socks","server":"1.2.3.4","server_port":1080}`)
+	full := json.RawMessage(`{
+		"inbounds": [{"type": "mixed", "tag": "mixed-in"}],
+		"outbounds": [{"type": "direct", "tag": "direct"}],
+		"route": {"final": "direct"}
+	}`)
+	_, err := BuildGatewaySingBoxConfig(base, full, "1.1.1.1", "")
+	if err == nil {
+		t.Fatal("expected error for full config without tun inbound")
+	}
+}
+
 func TestBuildGatewayProxyOutbound(t *testing.T) {
 	userConfig := json.RawMessage(`{"type":"socks","server":"example.com","server_port":1080,"dns_server":"10.0.0.1","bind_interface":"eth0"}`)
 	out, err := buildGatewayProxyOutbound(userConfig, "1.2.3.4")

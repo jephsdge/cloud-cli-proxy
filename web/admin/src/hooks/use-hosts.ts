@@ -68,6 +68,7 @@ export interface HostDetail {
     hostname: string;
     host_mounts?: HostMount[];
     host_ports?: HostPort[];
+    gateway_config?: Record<string, unknown> | null;
     created_at: string;
     updated_at: string;
   };
@@ -159,6 +160,38 @@ export function useUpdateHostPorts(hostId: string) {
       }),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["hosts", hostId] });
+    },
+  });
+}
+
+export interface HostGatewayConfigResponse {
+  host_id: string;
+  gateway_config: Record<string, unknown> | null;
+  effective_config: Record<string, unknown>;
+  source: string;
+  applied: boolean;
+}
+
+export function useHostGatewayConfig(hostId: string, enabled = true) {
+  return useQuery({
+    queryKey: ["hosts", hostId, "gateway-config"],
+    queryFn: () =>
+      apiFetch<HostGatewayConfigResponse>(`/hosts/${hostId}/gateway/config`),
+    enabled: !!hostId && enabled,
+  });
+}
+
+export function useUpdateHostGatewayConfig(hostId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (gatewayConfig: Record<string, unknown> | null) =>
+      apiFetch<HostGatewayConfigResponse>(`/hosts/${hostId}/gateway/config`, {
+        method: "PUT",
+        body: JSON.stringify({ gateway_config: gatewayConfig }),
+      }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["hosts", hostId] });
+      qc.invalidateQueries({ queryKey: ["hosts", hostId, "gateway-config"] });
     },
   });
 }
