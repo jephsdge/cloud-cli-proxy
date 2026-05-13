@@ -1,8 +1,20 @@
+x-build-versions:
+  docker_cli_image: &docker_cli_image ${DOCKER_CLI_IMAGE:-docker:29-cli}
+  claude_code_version: &claude_code_version ${CLAUDE_CODE_VERSION:-2.1.139}
+
 services:
   control-plane:
     build:
       context: .
       dockerfile: deploy/docker/control-plane/Dockerfile
+      args:
+        DOCKER_CLI_IMAGE: *docker_cli_image
+        HTTP_PROXY: ${HTTP_PROXY:-}
+        HTTPS_PROXY: ${HTTPS_PROXY:-}
+        NO_PROXY: ${NO_PROXY:-}
+        http_proxy: ${http_proxy:-}
+        https_proxy: ${https_proxy:-}
+        no_proxy: ${no_proxy:-}
     image: ghcr.io/zanel1u/cloud-cli-proxy/control-plane:latest
     pull_policy: never
 
@@ -10,6 +22,14 @@ services:
     build:
       context: .
       dockerfile: deploy/docker/admin/Dockerfile
+      args:
+        NPM_CONFIG_REGISTRY: ${NPM_CONFIG_REGISTRY:-https://registry.npmmirror.com}
+        HTTP_PROXY: ${HTTP_PROXY:-}
+        HTTPS_PROXY: ${HTTPS_PROXY:-}
+        NO_PROXY: ${NO_PROXY:-}
+        http_proxy: ${http_proxy:-}
+        https_proxy: ${https_proxy:-}
+        no_proxy: ${no_proxy:-}
     image: ghcr.io/zanel1u/cloud-cli-proxy/admin:latest
     pull_policy: never
 
@@ -17,6 +37,13 @@ services:
     build:
       context: .
       dockerfile: deploy/docker/sing-box-gateway/Dockerfile
+      args:
+        HTTP_PROXY: ${HTTP_PROXY:-}
+        HTTPS_PROXY: ${HTTPS_PROXY:-}
+        NO_PROXY: ${NO_PROXY:-}
+        http_proxy: ${http_proxy:-}
+        https_proxy: ${https_proxy:-}
+        no_proxy: ${no_proxy:-}
     image: ghcr.io/zanel1u/cloud-cli-proxy/sing-box-gateway:latest
     pull_policy: never
     command: ["true"]
@@ -27,6 +54,15 @@ services:
     build:
       context: .
       dockerfile: deploy/docker/managed-user/Dockerfile
+      args:
+        CLAUDE_CODE_VERSION: *claude_code_version
+        NPM_CONFIG_REGISTRY: ${NPM_CONFIG_REGISTRY:-}
+        HTTP_PROXY: ${HTTP_PROXY:-}
+        HTTPS_PROXY: ${HTTPS_PROXY:-}
+        NO_PROXY: ${NO_PROXY:-}
+        http_proxy: ${http_proxy:-}
+        https_proxy: ${https_proxy:-}
+        no_proxy: ${no_proxy:-}
     image: ghcr.io/zanel1u/cloud-cli-proxy/managed-user:latest
     pull_policy: never
     command: ["true"]

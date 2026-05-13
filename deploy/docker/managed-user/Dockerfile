@@ -22,6 +22,8 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
         zsh \
         curl \
         git \
+        nodejs \
+        npm \
         tmux \
         sudo \
         ca-certificates \
@@ -110,52 +112,20 @@ RUN userdel -f ubuntu 2>/dev/null || true \
 
 RUN adduser "${WORKSPACE_USER}" ssl-cert 2>/dev/null || true
 
-# Claude Code 独立二进制安装（不依赖 Node.js）
-# 重试策略：官方脚本最多尝试 3 次，失败后从 GitHub release 下载 binary 回退
+# Claude Code npm 安装；固定版本，避免构建时跟随 latest 造成行为漂移。
+ARG CLAUDE_CODE_VERSION=2.1.139
+ARG NPM_CONFIG_REGISTRY=
 RUN set -eux; \
-    INSTALL_MAX_RETRIES=3; \
-    installed=false; \
-    for attempt in $(seq 1 ${INSTALL_MAX_RETRIES}); do \
-      echo "Attempt ${attempt}/${INSTALL_MAX_RETRIES}: installing Claude Code via official script..."; \
-      if curl -fsSL -o /tmp/claude-install.sh https://claude.ai/install.sh && bash /tmp/claude-install.sh; then \
-        installed=true; \
-        break; \
-      fi; \
-      echo "Attempt ${attempt} failed, waiting before retry..."; \
-      sleep $((attempt * 2)); \
-    done; \
-    rm -f /tmp/claude-install.sh; \
-    if [ "$installed" != "true" ]; then \
-      echo "Official install failed after ${INSTALL_MAX_RETRIES} attempts, falling back to GitHub release binary..."; \
-      ARCH=$(dpkg --print-architecture); \
-      case "${ARCH}" in \
-        amd64) GOARCH="x86_64" ;; \
-        arm64) GOARCH="aarch64" ;; \
-        *) echo "unsupported arch: ${ARCH}" >&2; exit 1 ;; \
-      esac; \
-      LATEST=$(curl -fsSL https://api.github.com/repos/anthropics/claude-code/releases/latest | jq -r .tag_name); \
-      if [ -z "${LATEST}" ] || [ "${LATEST}" = "null" ]; then \
-        echo "Failed to get latest release version" >&2; exit 1; \
-      fi; \
-      BINARY_URL="https://github.com/anthropics/claude-code/releases/download/${LATEST}/claude-code-linux-${GOARCH}.tar.gz"; \
-      echo "Downloading ${BINARY_URL}..."; \
-      curl -fsSL -o /tmp/claude-binary.tar.gz "${BINARY_URL}"; \
-      tar -xzf /tmp/claude-binary.tar.gz -C /tmp; \
-      mv /tmp/claude /usr/local/bin/claude; \
-      rm -f /tmp/claude-binary.tar.gz; \
+    if [ -n "${NPM_CONFIG_REGISTRY}" ]; then npm config set registry "${NPM_CONFIG_REGISTRY}"; fi; \
+    npm config set fetch-retries 5; \
+    npm config set fetch-retry-mintimeout 20000; \
+    npm config set fetch-retry-maxtimeout 120000; \
+    npm install -g --omit=dev --include=optional --no-audit --no-fund "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}"; \
+    if ! command -v claude >/dev/null 2>&1; then \
+      echo "Claude npm binary not found in PATH" >&2; exit 1; \
     fi; \
-    CLAUDE_BIN=""; \
-    for candidate in /usr/local/bin/claude "${HOME}/.local/bin/claude" /root/.local/bin/claude; do \
-      if [ -x "${candidate}" ]; then CLAUDE_BIN="${candidate}"; break; fi; \
-    done; \
-    if [ -z "${CLAUDE_BIN}" ]; then \
-      echo "Claude binary not found in /usr/local/bin, ${HOME}/.local/bin, or /root/.local/bin" >&2; exit 1; \
-    fi; \
-    if [ "${CLAUDE_BIN}" != "/usr/local/bin/claude" ]; then \
-      cp -fL "${CLAUDE_BIN}" /usr/local/bin/claude; \
-    fi; \
-    chmod +x /usr/local/bin/claude; \
-    claude --version
+    claude --version; \
+    claude --version | awk '{print $1}' > /etc/cloud-claude/claude-code.version
 
 RUN mkdir -p /workspace/.ssh /var/run/sshd \
     && chown -R "${WORKSPACE_UID}:${WORKSPACE_GID}" /workspace \

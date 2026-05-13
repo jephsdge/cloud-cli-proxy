@@ -2,6 +2,7 @@ package network
 
 import (
 	"os"
+	"strings"
 	"testing"
 )
 
@@ -129,3 +130,37 @@ func TestNewContainerProxyProvider(t *testing.T) {
 	}
 }
 
+func TestPrepareHost_ConnectsGatewayBridgeBeforeStart(t *testing.T) {
+	source, err := os.ReadFile("container_proxy_provider.go")
+	if err != nil {
+		t.Fatalf("read provider source: %v", err)
+	}
+
+	body := string(source)
+	createIdx := strings.Index(body, "dockerCreateGateway(ctx")
+	connectIdx := strings.Index(body, `dockerNetworkConnect(ctx, "bridge", gwName, "")`)
+	startIdx := strings.Index(body, "dockerStartGateway(ctx")
+	if createIdx < 0 || connectIdx < 0 || startIdx < 0 {
+		t.Fatalf("expected create/connect/start calls to exist, got create=%d connect=%d start=%d", createIdx, connectIdx, startIdx)
+	}
+	if !(createIdx < connectIdx && connectIdx < startIdx) {
+		t.Fatalf("gateway call order must be create -> connect bridge -> start, got create=%d connect=%d start=%d", createIdx, connectIdx, startIdx)
+	}
+}
+
+func TestPrepareHost_AlwaysInstallsWorkerRouting(t *testing.T) {
+	source, err := os.ReadFile("container_proxy_provider.go")
+	if err != nil {
+		t.Fatalf("read provider source: %v", err)
+	}
+
+	body := string(source)
+	setupIdx := strings.Index(body, "setupPortForwarding(ctx, hostID, bridgeGW, gwIP, spec.PortMappings)")
+	if setupIdx < 0 {
+		t.Fatal("expected setupPortForwarding call to exist")
+	}
+	guardIdx := strings.LastIndex(body[:setupIdx], "if len(spec.PortMappings) > 0")
+	if guardIdx >= 0 {
+		t.Fatalf("setupPortForwarding must not be guarded by PortMappings length; found guard before call at %d", guardIdx)
+	}
+}

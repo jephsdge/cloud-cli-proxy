@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"runtime"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/zanel1u/cloud-cli-proxy/internal/agentapi"
@@ -47,12 +48,23 @@ type WorkerRepo interface {
 }
 
 type Worker struct {
-	repo     WorkerRepo
-	provider network.Provider
+	repo      WorkerRepo
+	provider  network.Provider
+	lockMu    sync.Mutex
+	hostLocks map[string]*hostActionLock
+}
+
+type hostActionLock struct {
+	mu   sync.Mutex
+	refs int
 }
 
 func NewWorker(repo WorkerRepo, provider network.Provider) *Worker {
-	return &Worker{repo: repo, provider: provider}
+	return &Worker{
+		repo:      repo,
+		provider:  provider,
+		hostLocks: make(map[string]*hostActionLock),
+	}
 }
 
 // TestPanicTrigger 是包级测试钩子，供单元测试注入 panic。
@@ -83,6 +95,9 @@ func (w *Worker) Execute(ctx context.Context, request agentapi.HostActionRequest
 	if TestPanicTrigger(request.Action) {
 		panic("test panic")
 	}
+
+	unlock := w.lockHostAction(request.HostID)
+	defer unlock()
 
 	var err error
 	switch request.Action {
@@ -153,6 +168,33 @@ func (w *Worker) Execute(ctx context.Context, request agentapi.HostActionRequest
 	return agentapi.TaskStatusUpdate{
 		TaskID: request.TaskID,
 		Status: taskStateSucceeded,
+	}
+}
+
+func (w *Worker) lockHostAction(hostID string) func() {
+	if hostID == "" {
+		return func() {}
+	}
+
+	w.lockMu.Lock()
+	lock := w.hostLocks[hostID]
+	if lock == nil {
+		lock = &hostActionLock{}
+		w.hostLocks[hostID] = lock
+	}
+	lock.refs++
+	w.lockMu.Unlock()
+
+	lock.mu.Lock()
+	return func() {
+		lock.mu.Unlock()
+
+		w.lockMu.Lock()
+		lock.refs--
+		if lock.refs == 0 && w.hostLocks[hostID] == lock {
+			delete(w.hostLocks, hostID)
+		}
+		w.lockMu.Unlock()
 	}
 }
 
@@ -1103,14 +1145,14 @@ func (t *pullProgressTracker) maybeReport() {
 		layersCopy[k] = v
 	}
 	broadcast.BroadcastJSON("tasks", map[string]any{
-		"topic":   "tasks",
-		"action":  "progress",
-		"id":      t.taskID,
+		"topic":  "tasks",
+		"action": "progress",
+		"id":     t.taskID,
 		"payload": map[string]any{
-			"percent":  percent,
-			"message":  message,
-			"host_id":  t.hostID,
-			"layers":   layersCopy,
+			"percent": percent,
+			"message": message,
+			"host_id": t.hostID,
+			"layers":  layersCopy,
 		},
 	})
 }

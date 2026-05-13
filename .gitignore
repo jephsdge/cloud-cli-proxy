@@ -56,3 +56,5 @@ web/admin/.tanstack/
 docs/.vitepress/.tempcoverage.out
 docs/.vitepress/.temp/
 .cache
+
+runtime-data

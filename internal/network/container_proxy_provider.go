@@ -77,16 +77,24 @@ func (p *ContainerProxyProvider) PrepareHost(ctx context.Context, spec HostNetwo
 	}
 
 	img := GatewayImage()
-	if err := dockerRunGateway(ctx, gwName, netName, gwIP, serverIP, configPath, img); err != nil {
+	if err := dockerCreateGateway(ctx, gwName, netName, gwIP, serverIP, configPath, img); err != nil {
 		p.teardownGateway(ctx, hostID)
-		return fmt.Errorf("gateway: start gateway container: %w", err)
+		return fmt.Errorf("gateway: create gateway container: %w", err)
 	}
 
 	// 网关也需要 bridge 网络才能访问互联网（连上游代理服务器）
-	// eth0 = 隔离网络（TPROXY 只抓 eth0），eth1 = bridge（出互联网）
+	// Docker 会按连接顺序命名网卡；不要依赖 eth0/eth1 的固定含义。
+	// sing-box 通过 auto_detect_interface 找出默认出站接口，隔离网络接口只负责接收 worker 流量。
+	// 必须在 start 前连接 bridge：sing-box auto_route 启动后会改容器路由，
+	// 再接 bridge 时 Docker 可能找不到到 172.17.0.1 的直连路由。
 	if err := dockerNetworkConnect(ctx, "bridge", gwName, ""); err != nil {
 		p.teardownGateway(ctx, hostID)
 		return fmt.Errorf("gateway: connect gateway to bridge: %w", err)
+	}
+
+	if err := dockerStartGateway(ctx, gwName); err != nil {
+		p.teardownGateway(ctx, hostID)
+		return fmt.Errorf("gateway: start gateway container: %w", err)
 	}
 
 	if err := waitGatewayHealthy(ctx, gwName); err != nil {
@@ -120,17 +128,17 @@ func (p *ContainerProxyProvider) PrepareHost(ctx context.Context, spec HostNetwo
 		return fmt.Errorf("gateway: configure worker routes/DNS: %w", err)
 	}
 
-	// 宿主机 iptables 路由规则（端口映射 DNAT + SNAT + 策略路由到 gateway）。
-	// 仅 Linux 有效；macOS Docker Desktop 由 vpnkit 处理。
-	if len(spec.PortMappings) > 0 {
-		if err := ensurePortMapChain(ctx); err != nil {
-			p.teardownGateway(ctx, hostID)
-			return fmt.Errorf("gateway: setup portmap chain: %w", err)
-		}
-		if err := setupPortForwarding(ctx, hostID, bridgeGW, gwIP, spec.PortMappings); err != nil {
-			p.teardownGateway(ctx, hostID)
-			return fmt.Errorf("gateway: setup port forwarding: %w", err)
-		}
+	// 宿主机 iptables / policy routing 规则。
+	// 策略路由必须始终安装：worker 默认网关指向宿主机 bridge IP，
+	// 若没有对应策略路由，新建连接会直接从宿主机出网而绕过 gateway。
+	// 端口映射 DNAT/SNAT 仅在 spec.PortMappings 非空时由 setupPortForwarding 添加。
+	if err := ensurePortMapChain(ctx); err != nil {
+		p.teardownGateway(ctx, hostID)
+		return fmt.Errorf("gateway: setup portmap chain: %w", err)
+	}
+	if err := setupPortForwarding(ctx, hostID, bridgeGW, gwIP, spec.PortMappings); err != nil {
+		p.teardownGateway(ctx, hostID)
+		return fmt.Errorf("gateway: setup port forwarding: %w", err)
 	}
 
 	if cpID, _ := os.Hostname(); cpID != "" {
@@ -221,9 +229,9 @@ func dockerNetworkCreate(ctx context.Context, name, subnet, gateway string) erro
 	return nil
 }
 
-func dockerRunGateway(ctx context.Context, gwName, netName, gwIP, proxyServerIP, configPath, image string) error {
+func dockerCreateGateway(ctx context.Context, gwName, netName, gwIP, proxyServerIP, configPath, image string) error {
 	args := []string{
-		"run", "-d",
+		"create",
 		"--name", gwName,
 		"--network", netName,
 		"--ip", gwIP,
@@ -237,6 +245,15 @@ func dockerRunGateway(ctx context.Context, gwName, netName, gwIP, proxyServerIP,
 		image,
 	}
 	cmd := exec.CommandContext(ctx, "docker", args...)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("docker %s: %w", strings.TrimSpace(string(out)), err)
+	}
+	return nil
+}
+
+func dockerStartGateway(ctx context.Context, gwName string) error {
+	cmd := exec.CommandContext(ctx, "docker", "start", gwName)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("docker %s: %w", strings.TrimSpace(string(out)), err)
@@ -336,4 +353,3 @@ echo 'nameserver 8.8.8.8' > /etc/resolv.conf
 	}
 	return nil
 }
-

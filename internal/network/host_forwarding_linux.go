@@ -5,6 +5,7 @@ package network
 import (
 	"context"
 	"fmt"
+	"hash/fnv"
 	"os/exec"
 	"strconv"
 	"strings"
@@ -12,26 +13,29 @@ import (
 	"github.com/zanel1u/cloud-cli-proxy/internal/agentapi"
 )
 
+const portMapChain = "CLOUDPROXY-PORTMAP"
+
+func hostNetnsCommand(ctx context.Context, name string, args ...string) *exec.Cmd {
+	nsenterArgs := append([]string{"-t", "1", "-m", "-n", "--", name}, args...)
+	return exec.CommandContext(ctx, "nsenter", nsenterArgs...)
+}
+
+func runHostNetnsCommand(ctx context.Context, name string, args ...string) (string, error) {
+	out, err := hostNetnsCommand(ctx, name, args...).CombinedOutput()
+	return strings.TrimSpace(string(out)), err
+}
+
 func ensureIPForwarding(ctx context.Context) error {
-	cmd := exec.CommandContext(ctx, "sysctl", "-w", "net.ipv4.ip_forward=1")
-	if out, err := cmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("enable ip forwarding: %w (%s)", err, strings.TrimSpace(string(out)))
+	if out, err := runHostNetnsCommand(ctx, "sysctl", "-w", "net.ipv4.ip_forward=1"); err != nil {
+		return fmt.Errorf("enable ip forwarding: %w (%s)", err, out)
 	}
 	return nil
 }
 
 func ensureHostMasquerade(ctx context.Context) error {
-	check := exec.CommandContext(ctx, "iptables", "-t", "nat", "-C", "POSTROUTING",
-		"-s", "10.99.0.0/16", "-j", "MASQUERADE")
-	if check.Run() == nil {
-		return nil
-	}
-	add := exec.CommandContext(ctx, "iptables", "-t", "nat", "-A", "POSTROUTING",
-		"-s", "10.99.0.0/16", "-j", "MASQUERADE")
-	if out, err := add.CombinedOutput(); err != nil {
-		return fmt.Errorf("add masquerade rule: %w (%s)", err, strings.TrimSpace(string(out)))
-	}
-	return nil
+	return appendUniqueRule(ctx, "nat", "POSTROUTING", []string{
+		"-s", "10.99.0.0/16", "-j", "MASQUERADE",
+	})
 }
 
 // setupPortForwarding creates host iptables rules for port mapping and worker routing.
@@ -47,6 +51,17 @@ func setupPortForwarding(ctx context.Context, hostID, bridgeGW, gwIP string, por
 	third := subnetThirdOctet(hostID)
 	workerIP := fmt.Sprintf("10.99.%d.3", third)
 	subnet := fmt.Sprintf("10.99.%d.0/24", third)
+	hostChain := hostPortMapChain(hostID)
+
+	if err := ensureHostPortMapChains(ctx, hostChain); err != nil {
+		return err
+	}
+
+	// Remove rules left by older versions where per-host rules lived directly
+	// in CLOUDPROXY-PORTMAP. New rules are isolated in the per-host chain.
+	deleteRulesByNeedle(ctx, "nat", portMapChain, workerIP)
+	deleteRulesByNeedle(ctx, "filter", portMapChain, workerIP)
+	deleteRulesByNeedle(ctx, "filter", portMapChain, subnet)
 
 	// --- PREROUTING chain (nat): DNAT for port mapping ---
 	for _, pm := range ports {
@@ -63,31 +78,34 @@ func setupPortForwarding(ctx context.Context, hostID, bridgeGW, gwIP string, por
 		cp := strconv.Itoa(pm.ContainerPort)
 
 		// DNAT: external:hostPort -> worker:containerPort
-		dnatArgs := []string{"-t", "nat", "-A", "CLOUDPROXY-PORTMAP",
+		dnatRule := []string{
 			"-p", proto, "--dport", hp,
-			"-j", "DNAT", "--to-destination", workerIP + ":" + cp}
-		if out, err := exec.CommandContext(ctx, "iptables", dnatArgs...).CombinedOutput(); err != nil {
-			return fmt.Errorf("iptables DNAT %d->%s:%d: %w (%s)", pm.HostPort, workerIP, pm.ContainerPort, err, strings.TrimSpace(string(out)))
+			"-j", "DNAT", "--to-destination", workerIP + ":" + cp,
+		}
+		if err := appendUniqueRule(ctx, "nat", hostChain, dnatRule); err != nil {
+			return fmt.Errorf("iptables DNAT %d->%s:%d: %w", pm.HostPort, workerIP, pm.ContainerPort, err)
 		}
 
 		// SNAT: change source IP to bridgeGW so worker replies directly to host
 		// instead of routing through gateway where sing-box would hijack it.
-		snatArgs := []string{"-t", "nat", "-A", "POSTROUTING",
+		snatRule := []string{
 			"-p", proto,
 			"-d", workerIP, "--dport", cp,
 			"-m", "comment", "--comment", "cloudproxy-snat-" + hostID,
-			"-j", "SNAT", "--to-source", bridgeGW}
-		if out, err := exec.CommandContext(ctx, "iptables", snatArgs...).CombinedOutput(); err != nil {
-			return fmt.Errorf("iptables SNAT %s:%d: %w (%s)", workerIP, pm.ContainerPort, err, strings.TrimSpace(string(out)))
+			"-j", "SNAT", "--to-source", bridgeGW,
+		}
+		if err := appendUniqueRule(ctx, "nat", "POSTROUTING", snatRule); err != nil {
+			return fmt.Errorf("iptables SNAT %s:%d: %w", workerIP, pm.ContainerPort, err)
 		}
 
 		// FORWARD ACCEPT for port-mapped inbound traffic
-		fwdArgs := []string{"-A", "CLOUDPROXY-PORTMAP",
+		fwdRule := []string{
 			"-p", proto, "--dport", cp,
 			"-d", workerIP,
-			"-j", "ACCEPT"}
-		if out, err := exec.CommandContext(ctx, "iptables", fwdArgs...).CombinedOutput(); err != nil {
-			return fmt.Errorf("iptables FORWARD %s:%d: %w (%s)", workerIP, pm.ContainerPort, err, strings.TrimSpace(string(out)))
+			"-j", "ACCEPT",
+		}
+		if err := appendUniqueRule(ctx, "filter", hostChain, fwdRule); err != nil {
+			return fmt.Errorf("iptables FORWARD %s:%d: %w", workerIP, pm.ContainerPort, err)
 		}
 	}
 
@@ -95,16 +113,21 @@ func setupPortForwarding(ctx context.Context, hostID, bridgeGW, gwIP string, por
 	// Worker traffic (DNS, HTTP, etc.) reaches the host first because the
 	// default gateway is the host bridge IP. The host policy-routes it to
 	// the gateway for sing-box tunneling.
-	allFwdArgs := []string{"-A", "CLOUDPROXY-PORTMAP",
-		"-s", "10.99.0.0/16",
-		"-j", "ACCEPT"}
-	if out, err := exec.CommandContext(ctx, "iptables", allFwdArgs...).CombinedOutput(); err != nil {
-		return fmt.Errorf("iptables worker subnet forward: %w (%s)", err, strings.TrimSpace(string(out)))
+	if err := appendUniqueRule(ctx, "filter", hostChain, []string{
+		"-s", subnet,
+		"-j", "ACCEPT",
+	}); err != nil {
+		return fmt.Errorf("iptables worker subnet forward: %w", err)
 	}
 
 	// --- Policy routing: worker subnet -> gateway -> sing-box tunnel ---
-	_ = exec.CommandContext(ctx, "ip", "rule", "add", "from", subnet, "lookup", "100").Run()
-	_ = exec.CommandContext(ctx, "ip", "route", "add", "default", "via", gwIP, "table", "100").Run()
+	tableID := strconv.Itoa(10000 + third)
+	if out, err := runHostNetnsCommand(ctx, "ip", "rule", "add", "from", subnet, "lookup", tableID); err != nil && !strings.Contains(out, "File exists") {
+		return fmt.Errorf("add policy rule from %s lookup %s: %w (%s)", subnet, tableID, err, out)
+	}
+	if out, err := runHostNetnsCommand(ctx, "ip", "route", "replace", "default", "via", gwIP, "table", tableID); err != nil {
+		return fmt.Errorf("replace policy route table %s via %s: %w (%s)", tableID, gwIP, err, out)
+	}
 
 	return nil
 }
@@ -113,75 +136,146 @@ func setupPortForwarding(ctx context.Context, hostID, bridgeGW, gwIP string, por
 // it into PREROUTING (nat) and FORWARD (filter) if not already present.
 func ensurePortMapChain(ctx context.Context) error {
 	// Create chain (ignore "already exists" error)
-	exec.CommandContext(ctx, "iptables", "-t", "nat", "-N", "CLOUDPROXY-PORTMAP").Run()
-	exec.CommandContext(ctx, "iptables", "-N", "CLOUDPROXY-PORTMAP").Run()
+	hostNetnsCommand(ctx, "iptables", "-t", "nat", "-N", portMapChain).Run()
+	hostNetnsCommand(ctx, "iptables", "-N", portMapChain).Run()
 
 	// Hook into PREROUTING (nat) if not already present
-	if err := ensureChainHook(ctx, "nat", "PREROUTING", "CLOUDPROXY-PORTMAP"); err != nil {
+	if err := ensureChainHook(ctx, "nat", "PREROUTING", portMapChain); err != nil {
 		return err
 	}
 	// Hook into FORWARD (filter) if not already present
-	if err := ensureChainHook(ctx, "filter", "FORWARD", "CLOUDPROXY-PORTMAP"); err != nil {
+	if err := ensureChainHook(ctx, "filter", "FORWARD", portMapChain); err != nil {
 		return err
 	}
 
+	return nil
+}
+
+func ensureHostPortMapChains(ctx context.Context, hostChain string) error {
+	hostNetnsCommand(ctx, "iptables", "-t", "nat", "-N", hostChain).Run()
+	hostNetnsCommand(ctx, "iptables", "-N", hostChain).Run()
+
+	if err := appendUniqueRule(ctx, "nat", portMapChain, []string{"-j", hostChain}); err != nil {
+		return fmt.Errorf("hook nat/%s->%s: %w", portMapChain, hostChain, err)
+	}
+	if err := appendUniqueRule(ctx, "filter", portMapChain, []string{"-j", hostChain}); err != nil {
+		return fmt.Errorf("hook filter/%s->%s: %w", portMapChain, hostChain, err)
+	}
 	return nil
 }
 
 func ensureChainHook(ctx context.Context, table, parent, child string) error {
-	baseArgs := []string{"-t", table, "-C", parent, "-j", child}
-	if exec.CommandContext(ctx, "iptables", baseArgs...).Run() == nil {
+	checkArgs := iptablesArgs(table, "-C", parent, "-j", child)
+	if hostNetnsCommand(ctx, "iptables", checkArgs...).Run() == nil {
 		return nil
 	}
 
-	addArgs := []string{"-t", table, "-I", parent, "1", "-j", child}
-	if out, err := exec.CommandContext(ctx, "iptables", addArgs...).CombinedOutput(); err != nil {
-		return fmt.Errorf("hook %s/%s->%s: %w (%s)", table, parent, child, err, strings.TrimSpace(string(out)))
+	addArgs := iptablesArgs(table, "-I", parent, "1", "-j", child)
+	if out, err := runHostNetnsCommand(ctx, "iptables", addArgs...); err != nil {
+		return fmt.Errorf("hook %s/%s->%s: %w (%s)", table, parent, child, err, out)
 	}
 	return nil
 }
 
-// teardownPortForwarding removes the CLOUDPROXY-PORTMAP chain from both
-// PREROUTING (nat) and FORWARD (filter), then flushes and deletes the chain.
-// Also cleans up SNAT rules and policy routes for the given host.
+// teardownPortForwarding removes only this host's jump rules, per-host chains,
+// SNAT rules, and policy routes. The shared CLOUDPROXY-PORTMAP hook remains
+// installed because other hosts may still be using it.
 func teardownPortForwarding(ctx context.Context, hostID string) {
 	third := subnetThirdOctet(hostID)
 	gwIP := fmt.Sprintf("10.99.%d.2", third)
+	workerIP := fmt.Sprintf("10.99.%d.3", third)
 	subnet := fmt.Sprintf("10.99.%d.0/24", third)
+	tableID := strconv.Itoa(10000 + third)
+	hostChain := hostPortMapChain(hostID)
 
 	// Remove SNAT rules by matching the comment
 	deleteNatRulesByComment(ctx, "cloudproxy-snat-"+hostID)
 
-	// Remove hooks
-	exec.CommandContext(ctx, "iptables", "-t", "nat", "-D", "PREROUTING", "-j", "CLOUDPROXY-PORTMAP").Run()
-	exec.CommandContext(ctx, "iptables", "-D", "FORWARD", "-j", "CLOUDPROXY-PORTMAP").Run()
+	// Remove per-host jumps and chains. Keep the shared CLOUDPROXY-PORTMAP
+	// hook/chain because other hosts may still be using it.
+	deleteJumpRules(ctx, "nat", portMapChain, hostChain)
+	deleteJumpRules(ctx, "filter", portMapChain, hostChain)
+	hostNetnsCommand(ctx, "iptables", "-t", "nat", "-F", hostChain).Run()
+	hostNetnsCommand(ctx, "iptables", "-t", "nat", "-X", hostChain).Run()
+	hostNetnsCommand(ctx, "iptables", "-F", hostChain).Run()
+	hostNetnsCommand(ctx, "iptables", "-X", hostChain).Run()
 
-	// Flush and delete nat chain
-	exec.CommandContext(ctx, "iptables", "-t", "nat", "-F", "CLOUDPROXY-PORTMAP").Run()
-	exec.CommandContext(ctx, "iptables", "-t", "nat", "-X", "CLOUDPROXY-PORTMAP").Run()
-
-	// Flush and delete filter chain
-	exec.CommandContext(ctx, "iptables", "-F", "CLOUDPROXY-PORTMAP").Run()
-	exec.CommandContext(ctx, "iptables", "-X", "CLOUDPROXY-PORTMAP").Run()
+	// Best-effort cleanup for rules created by older builds before per-host
+	// chains existed.
+	deleteRulesByNeedle(ctx, "nat", portMapChain, workerIP)
+	deleteRulesByNeedle(ctx, "filter", portMapChain, workerIP)
+	deleteRulesByNeedle(ctx, "filter", portMapChain, subnet)
 
 	// Clean up policy routes
-	exec.CommandContext(ctx, "ip", "rule", "del", "from", subnet, "lookup", "100").Run()
-	exec.CommandContext(ctx, "ip", "route", "del", "default", "via", gwIP, "table", "100").Run()
+	hostNetnsCommand(ctx, "ip", "rule", "del", "from", subnet, "lookup", tableID).Run()
+	hostNetnsCommand(ctx, "ip", "route", "del", "default", "via", gwIP, "table", tableID).Run()
 }
 
 // deleteNatRulesByComment removes all rules in the POSTROUTING chain whose
 // comment contains the given substring. It iterates from the end to avoid
 // line-number shifts.
 func deleteNatRulesByComment(ctx context.Context, comment string) {
-	out, _ := exec.CommandContext(ctx, "iptables", "-t", "nat", "-L", "POSTROUTING", "--line-numbers", "-n").CombinedOutput()
+	out, _ := hostNetnsCommand(ctx, "iptables", "-t", "nat", "-L", "POSTROUTING", "--line-numbers", "-n").CombinedOutput()
 	lines := strings.Split(string(out), "\n")
 	// Iterate backwards so line numbers don't shift
 	for i := len(lines) - 1; i >= 0; i-- {
 		if strings.Contains(lines[i], comment) {
 			fields := strings.Fields(lines[i])
 			if len(fields) > 0 {
-				exec.CommandContext(ctx, "iptables", "-t", "nat", "-D", "POSTROUTING", fields[0]).Run()
+				hostNetnsCommand(ctx, "iptables", "-t", "nat", "-D", "POSTROUTING", fields[0]).Run()
 			}
 		}
 	}
+}
+
+func appendUniqueRule(ctx context.Context, table, chain string, rule []string) error {
+	checkArgs := append(iptablesArgs(table, "-C", chain), rule...)
+	if hostNetnsCommand(ctx, "iptables", checkArgs...).Run() == nil {
+		return nil
+	}
+	addArgs := append(iptablesArgs(table, "-A", chain), rule...)
+	if out, err := runHostNetnsCommand(ctx, "iptables", addArgs...); err != nil {
+		return fmt.Errorf("%s/%s append %s: %w (%s)", table, chain, strings.Join(rule, " "), err, out)
+	}
+	return nil
+}
+
+func deleteJumpRules(ctx context.Context, table, parent, child string) {
+	for {
+		args := iptablesArgs(table, "-D", parent, "-j", child)
+		if hostNetnsCommand(ctx, "iptables", args...).Run() != nil {
+			return
+		}
+	}
+}
+
+func deleteRulesByNeedle(ctx context.Context, table, chain, needle string) {
+	if needle == "" {
+		return
+	}
+	out, _ := runHostNetnsCommand(ctx, "iptables", iptablesArgs(table, "-S", chain)...)
+	for _, line := range strings.Split(out, "\n") {
+		if !strings.Contains(line, needle) {
+			continue
+		}
+		fields := strings.Fields(line)
+		if len(fields) < 3 || fields[0] != "-A" || fields[1] != chain {
+			continue
+		}
+		args := iptablesArgs(table, append([]string{"-D", chain}, fields[2:]...)...)
+		hostNetnsCommand(ctx, "iptables", args...).Run()
+	}
+}
+
+func iptablesArgs(table string, args ...string) []string {
+	if table == "" {
+		return args
+	}
+	return append([]string{"-t", table}, args...)
+}
+
+func hostPortMapChain(hostID string) string {
+	h := fnv.New64a()
+	_, _ = h.Write([]byte(hostID))
+	return fmt.Sprintf("CPH-%016x", h.Sum64())
 }

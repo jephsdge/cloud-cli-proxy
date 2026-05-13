@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"os"
 	"os/exec"
 	"strings"
 	"sync"
@@ -63,6 +64,34 @@ func (c *ImageCache) Refresh(ctx context.Context) error {
 	c.status.ImageVersion = spec.ImageVersion
 	c.status.Refreshing = true
 	c.mu.Unlock()
+
+	if strings.EqualFold(os.Getenv("CLOUD_CLI_PROXY_SKIP_IMAGE_PULL"), "true") ||
+		os.Getenv("CLOUD_CLI_PROXY_SKIP_IMAGE_PULL") == "1" {
+		inspectCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+		defer cancel()
+
+		digest, created, version, inspectErr := c.inspectImage(inspectCtx, spec.ImageName)
+		c.mu.Lock()
+		defer c.mu.Unlock()
+		c.status.Refreshing = false
+		c.status.LastRefreshAt = time.Now()
+		if inspectErr != nil {
+			c.status.LastRefreshError = inspectErr.Error()
+			c.logger.Warn("image cache inspect failed while pull is disabled",
+				"image", spec.ImageName, "error", inspectErr)
+			return fmt.Errorf("docker inspect %s: %w", spec.ImageName, inspectErr)
+		}
+		c.status.LocalDigest = digest
+		c.status.LocalCreated = created
+		if version != "" {
+			c.status.ImageVersion = version
+		}
+		c.status.LastRefreshError = ""
+		c.logger.Info("image cache pull skipped by configuration",
+			"image", spec.ImageName, "digest", c.status.LocalDigest)
+		broadcast.Broadcast("image-status", "update", "")
+		return nil
+	}
 
 	pullCtx, cancel := context.WithTimeout(ctx, 10*time.Minute)
 	defer cancel()
