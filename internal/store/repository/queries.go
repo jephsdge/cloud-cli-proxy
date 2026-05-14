@@ -1560,6 +1560,17 @@ func (r *Repository) UpdateHostPorts(ctx context.Context, hostID string, ports H
 	return err
 }
 
+func (r *Repository) UpdateHostTimezone(ctx context.Context, hostID, timezone string) error {
+	tag, err := r.db.Exec(ctx, `UPDATE hosts SET timezone = $1, updated_at = NOW() WHERE id = $2`, timezone, hostID)
+	if err != nil {
+		return fmt.Errorf("update host timezone: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return pgx.ErrNoRows
+	}
+	return nil
+}
+
 func (r *Repository) UpdateHostGatewayConfig(ctx context.Context, hostID, mode string, config json.RawMessage) error {
 	if mode == "" {
 		mode = GatewayConfigModeAuto

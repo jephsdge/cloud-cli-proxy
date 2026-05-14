@@ -6,6 +6,7 @@ import { useUsers } from "@/hooks/use-users";
 import { useCreateHost } from "@/hooks/use-hosts";
 import { useEgressIPs } from "@/hooks/use-egress-ips";
 import { useTaskPolling } from "@/hooks/use-tasks";
+import { TIMEZONE_OPTIONS } from "@/lib/timezones";
 import { PathAutocomplete } from "@/components/hosts/path-autocomplete";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -29,22 +30,6 @@ interface CreateHostDialogProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
 }
-
-const TIMEZONE_OPTIONS = [
-  { value: "America/Los_Angeles", label: "美西 / 洛杉矶", offset: "UTC-8" },
-  { value: "America/New_York", label: "美东 / 纽约", offset: "UTC-5/UTC-4" },
-  { value: "America/Chicago", label: "美中 / 芝加哥", offset: "UTC-6" },
-  { value: "America/Denver", label: "山区 / 丹佛", offset: "UTC-7" },
-  { value: "Europe/London", label: "伦敦", offset: "UTC+0" },
-  { value: "Europe/Paris", label: "巴黎", offset: "UTC+1" },
-  { value: "Europe/Berlin", label: "柏林", offset: "UTC+1" },
-  { value: "Asia/Tokyo", label: "东京", offset: "UTC+9" },
-  { value: "Asia/Shanghai", label: "上海", offset: "UTC+8" },
-  { value: "Asia/Singapore", label: "新加坡", offset: "UTC+8" },
-  { value: "Asia/Seoul", label: "首尔", offset: "UTC+9" },
-  { value: "Australia/Sydney", label: "悉尼", offset: "UTC+10" },
-  { value: "Pacific/Honolulu", label: "夏威夷", offset: "UTC-10" },
-];
 
 const statusDisplay: Record<
   string,

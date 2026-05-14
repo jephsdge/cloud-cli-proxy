@@ -56,6 +56,7 @@ import { BindingManager } from "@/components/hosts/binding-manager";
 import { GatewayConfigManager } from "@/components/hosts/gateway-config-manager";
 import { MountManager } from "@/components/hosts/mount-manager";
 import { PortManager } from "@/components/hosts/port-manager";
+import { TimezoneManager } from "@/components/hosts/timezone-manager";
 import { RotatePasswordDialog } from "@/components/users/rotate-password-dialog";
 import { ChangeRootPasswordDialog } from "@/components/hosts/change-root-password-dialog";
 import { ClaudeSettingsDialog } from "@/components/hosts/claude-settings-dialog";
@@ -392,18 +393,23 @@ function HostDetailPage() {
             </div>
             <div>
               <span className="block text-sm font-semibold">配置详情</span>
-              <span className="text-xs text-muted-foreground">出口 IP 绑定、挂载路径、端口映射、Gateway 配置</span>
+              <span className="text-xs text-muted-foreground">出口 IP 绑定、时区、挂载路径、端口映射、Gateway 配置</span>
             </div>
           </div>
           <ChevronDown className={`h-4 w-4 text-muted-foreground transition-transform ${configOpen ? "" : "-rotate-90"}`} />
         </button>
         {configOpen && (
           <div className="border-t border-border/40 px-6 py-5">
-            <div className="grid grid-cols-1 lg:grid-cols-3">
+            <div className="grid grid-cols-1 lg:grid-cols-4">
               <div className="px-2 py-2 lg:border-r lg:border-border/40 lg:px-4">
                 <h3 className="mb-1 text-sm font-semibold">出口 IP 绑定</h3>
                 <p className="mb-4 text-xs text-muted-foreground">每台主机必须绑定一个出口 IP</p>
                 <BindingManager hostId={hostId} hostStatus={host.status} bindings={bindings} />
+              </div>
+              <div className="px-2 py-2 lg:border-r lg:border-border/40 lg:px-4">
+                <h3 className="mb-1 text-sm font-semibold">主机时区</h3>
+                <p className="mb-4 text-xs text-muted-foreground">影响容器内 TZ 环境变量</p>
+                <TimezoneManager hostId={hostId} hostStatus={host.status} timezone={host.timezone} />
               </div>
               <div className="px-2 py-2 lg:border-r lg:border-border/40 lg:px-4">
                 <h3 className="mb-1 text-sm font-semibold">挂载路径</h3>

@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	nethttp "net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -27,6 +28,8 @@ type stubHostStore struct {
 	detailErr     error
 	hostErr       error
 	runningErr    error
+	timezone      string
+	timezoneErr   error
 }
 
 func (s *stubHostStore) ListHostsWithUsername(_ context.Context) ([]repository.HostWithUsername, error) {
@@ -75,6 +78,11 @@ func (s *stubHostStore) UpdateHostMounts(_ context.Context, _ string, _ reposito
 
 func (s *stubHostStore) UpdateHostPorts(_ context.Context, _ string, _ repository.HostPorts) error {
 	return nil
+}
+
+func (s *stubHostStore) UpdateHostTimezone(_ context.Context, _ string, timezone string) error {
+	s.timezone = timezone
+	return s.timezoneErr
 }
 
 func (s *stubHostStore) UpdateHostGatewayConfig(_ context.Context, _, _ string, _ json.RawMessage) error {
@@ -239,6 +247,82 @@ func TestAdminHostsHandler(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestAdminHostsUpdateTimezone(t *testing.T) {
+	now := time.Now().Truncate(time.Second)
+	store := &stubHostStore{
+		detail: repository.HostDetail{
+			Host: repository.Host{
+				ID:        "h1",
+				UserID:    "u1",
+				Status:    "running",
+				Timezone:  "America/Los_Angeles",
+				CreatedAt: now,
+				UpdatedAt: now,
+			},
+			User: repository.User{ID: "u1", Username: "testuser", Status: "active", CreatedAt: now, UpdatedAt: now},
+		},
+	}
+	router := adminTestRouter(t, Dependencies{
+		Logger:        slog.Default(),
+		AdminHosts:    store,
+		HostActions:   &stubQueuer{},
+		EventRecorder: &stubEventRecorder{},
+	})
+	srv := httptest.NewServer(router)
+	defer srv.Close()
+
+	req, _ := nethttp.NewRequest(
+		"PUT",
+		srv.URL+"/v1/admin/hosts/h1/timezone",
+		strings.NewReader(`{"timezone":"America/New_York"}`),
+	)
+	req.Header.Set("Authorization", "Bearer "+validAdminToken(t))
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := nethttp.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("request failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != nethttp.StatusOK {
+		var respBody map[string]any
+		_ = json.NewDecoder(resp.Body).Decode(&respBody)
+		t.Fatalf("status = %d, want 200; body = %v", resp.StatusCode, respBody)
+	}
+	if store.timezone != "America/New_York" {
+		t.Fatalf("timezone = %q, want America/New_York", store.timezone)
+	}
+
+	var body updateHostTimezoneResponse
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if !body.RequiresRebuild {
+		t.Fatal("running host timezone update should require rebuild")
+	}
+}
+
+func TestNormalizeHostTimezoneRejectsInvalidValue(t *testing.T) {
+	if _, err := normalizeHostTimezone("../etc/passwd"); err == nil {
+		t.Fatal("expected invalid timezone error")
+	}
+	if got, err := normalizeHostTimezone(" America/New_York "); err != nil || got != "America/New_York" {
+		t.Fatalf("normalizeHostTimezone = %q, %v; want America/New_York, nil", got, err)
+	}
+}
+
+func TestHostTimezoneRequiresRebuild(t *testing.T) {
+	for _, status := range []string{"running", "stopped", "failed"} {
+		if !hostTimezoneRequiresRebuild(status) {
+			t.Fatalf("status %q should require rebuild", status)
+		}
+	}
+	if hostTimezoneRequiresRebuild("pending") {
+		t.Fatal("pending host should not require rebuild")
 	}
 }
 

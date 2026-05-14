@@ -43,6 +43,7 @@ type AdminHostStore interface {
 	GetHostWithClaudeAccount(ctx context.Context, hostID string) (repository.HostWithClaudeAccount, error) // Phase 33 D-22
 	UpdateHostMounts(ctx context.Context, hostID string, mounts repository.HostMounts) error
 	UpdateHostPorts(ctx context.Context, hostID string, ports repository.HostPorts) error
+	UpdateHostTimezone(ctx context.Context, hostID, timezone string) error
 	UpdateHostGatewayConfig(ctx context.Context, hostID, mode string, config json.RawMessage) error
 }
 
@@ -1113,6 +1114,77 @@ func (h *AdminHostsHandler) UpdatePorts() nethttp.Handler {
 	})
 }
 
+type updateHostTimezoneResponse struct {
+	HostID           string `json:"host_id"`
+	Timezone         string `json:"timezone"`
+	RequiresRebuild  bool   `json:"requires_rebuild"`
+	PreviousTimezone string `json:"previous_timezone,omitempty"`
+}
+
+func (h *AdminHostsHandler) UpdateTimezone() nethttp.Handler {
+	return nethttp.HandlerFunc(func(w nethttp.ResponseWriter, r *nethttp.Request) {
+		hostID := r.PathValue("hostID")
+		var body struct {
+			Timezone string `json:"timezone"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			writeJSON(w, nethttp.StatusBadRequest, map[string]string{"error": "invalid request body"})
+			return
+		}
+
+		timezone, err := normalizeHostTimezone(body.Timezone)
+		if err != nil {
+			writeJSON(w, nethttp.StatusBadRequest, map[string]string{"error": err.Error()})
+			return
+		}
+
+		detail, err := h.store.GetHostDetail(r.Context(), hostID)
+		if err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				writeJSON(w, nethttp.StatusNotFound, map[string]string{"error": "host not found"})
+				return
+			}
+			h.logger.Error("get host for timezone update failed", "host_id", hostID, "error", err)
+			writeJSON(w, nethttp.StatusInternalServerError, map[string]string{"error": "get host failed"})
+			return
+		}
+
+		if err := h.store.UpdateHostTimezone(r.Context(), hostID, timezone); err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				writeJSON(w, nethttp.StatusNotFound, map[string]string{"error": "host not found"})
+				return
+			}
+			h.logger.Error("update host timezone failed", "host_id", hostID, "timezone", timezone, "error", err)
+			writeJSON(w, nethttp.StatusInternalServerError, map[string]string{"error": "update timezone failed"})
+			return
+		}
+
+		requiresRebuild := hostTimezoneRequiresRebuild(detail.Host.Status)
+		if h.events != nil {
+			hid := hostID
+			if _, err := h.events.RecordEvent(r.Context(), repository.RecordEventParams{
+				HostID: &hid, Level: "info", Type: "admin.host.update_timezone",
+				Message: "管理员更新主机时区",
+				Metadata: map[string]any{
+					"operator":          "admin",
+					"previous_timezone": detail.Host.Timezone,
+					"timezone":          timezone,
+					"requires_rebuild":  requiresRebuild,
+				},
+			}); err != nil {
+				h.logger.Error("record event failed", "type", "admin.host.update_timezone", "error", err)
+			}
+		}
+
+		writeJSON(w, nethttp.StatusOK, updateHostTimezoneResponse{
+			HostID:           hostID,
+			Timezone:         timezone,
+			RequiresRebuild:  requiresRebuild,
+			PreviousTimezone: detail.Host.Timezone,
+		})
+	})
+}
+
 type hostGatewayConfigResponse struct {
 	HostID          string          `json:"host_id"`
 	Mode            string          `json:"mode"`
@@ -1341,6 +1413,40 @@ func nullableRaw(raw json.RawMessage) json.RawMessage {
 		return json.RawMessage("null")
 	}
 	return raw
+}
+
+func normalizeHostTimezone(value string) (string, error) {
+	timezone := strings.TrimSpace(value)
+	if timezone == "" {
+		return "", fmt.Errorf("timezone is required")
+	}
+	if len(timezone) > 128 {
+		return "", fmt.Errorf("timezone is too long")
+	}
+	for _, r := range timezone {
+		if (r >= 'A' && r <= 'Z') || (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') {
+			continue
+		}
+		switch r {
+		case '/', '_', '-', '+':
+			continue
+		default:
+			return "", fmt.Errorf("timezone contains invalid character %q", r)
+		}
+	}
+	if strings.HasPrefix(timezone, "/") || strings.Contains(timezone, "..") || strings.Contains(timezone, "//") {
+		return "", fmt.Errorf("timezone is invalid")
+	}
+	return timezone, nil
+}
+
+func hostTimezoneRequiresRebuild(status string) bool {
+	switch status {
+	case "running", "stopped", "failed":
+		return true
+	default:
+		return false
+	}
 }
 
 var applyRunningGatewayConfig = func(ctx context.Context, hostID string, config []byte) error {

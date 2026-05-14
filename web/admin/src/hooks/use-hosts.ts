@@ -1,4 +1,5 @@
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { toast } from "sonner";
 import { apiFetch } from "@/lib/api";
 import { getToken } from "@/lib/auth";
 import { useSSE } from "@/hooks/use-sse";
@@ -163,6 +164,28 @@ export function useUpdateHostPorts(hostId: string) {
       }),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["hosts", hostId] });
+    },
+  });
+}
+
+export interface UpdateHostTimezoneResponse {
+  host_id: string;
+  timezone: string;
+  requires_rebuild: boolean;
+  previous_timezone?: string;
+}
+
+export function useUpdateHostTimezone(hostId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (timezone: string) =>
+      apiFetch<UpdateHostTimezoneResponse>(`/hosts/${hostId}/timezone`, {
+        method: "PUT",
+        body: JSON.stringify({ timezone }),
+      }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["hosts", hostId] });
+      qc.invalidateQueries({ queryKey: ["hosts"] });
     },
   });
 }
