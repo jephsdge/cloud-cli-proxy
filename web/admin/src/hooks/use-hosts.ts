@@ -56,6 +56,22 @@ export interface HostPort {
   protocol?: string;
 }
 
+export interface WorkerIdentityLocale {
+  LANG?: string;
+  LANGUAGE?: string;
+  LC_ALL?: string;
+}
+
+export interface WorkerIdentity {
+  hostname?: string;
+  timezone?: string;
+  machine_id?: string;
+  locale?: WorkerIdentityLocale;
+  vnc_resolution?: string;
+  browser_language?: string;
+  browser_window_size?: string;
+}
+
 export type GatewayConfigMode = "auto" | "custom";
 
 export interface HostDetail {
@@ -73,6 +89,7 @@ export interface HostDetail {
     host_ports?: HostPort[];
     gateway_config_mode?: GatewayConfigMode;
     gateway_config?: Record<string, unknown> | null;
+    worker_identity?: WorkerIdentity;
     created_at: string;
     updated_at: string;
   };
@@ -185,6 +202,36 @@ export function useUpdateHostTimezone(hostId: string) {
       }),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["hosts", hostId] });
+      qc.invalidateQueries({ queryKey: ["hosts"] });
+    },
+  });
+}
+
+export interface HostIdentityResponse {
+  host_id: string;
+  identity: WorkerIdentity;
+  requires_rebuild: boolean;
+}
+
+export function useHostIdentity(hostId: string, enabled = true) {
+  return useQuery({
+    queryKey: ["hosts", hostId, "identity"],
+    queryFn: () => apiFetch<HostIdentityResponse>(`/hosts/${hostId}/identity`),
+    enabled: !!hostId && enabled,
+  });
+}
+
+export function useUpdateHostIdentity(hostId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (identity: WorkerIdentity) =>
+      apiFetch<HostIdentityResponse>(`/hosts/${hostId}/identity`, {
+        method: "PUT",
+        body: JSON.stringify({ identity }),
+      }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["hosts", hostId] });
+      qc.invalidateQueries({ queryKey: ["hosts", hostId, "identity"] });
       qc.invalidateQueries({ queryKey: ["hosts"] });
     },
   });
@@ -428,12 +475,27 @@ export function useUnbindEgressIP() {
   });
 }
 
-export function useHostLogs(hostId: string, refetchInterval: number | false = 5000) {
+export type HostLogTarget = "worker" | "gateway";
+
+export interface HostLogsResponse {
+  host_id: string;
+  target: HostLogTarget;
+  container_name: string;
+  tail: number;
+  logs: string;
+  error?: string;
+}
+
+export function useHostLogs(
+  hostId: string,
+  refetchInterval: number | false = 5000,
+  target: HostLogTarget = "worker",
+) {
   return useQuery({
-    queryKey: ["hosts", hostId, "logs"],
+    queryKey: ["hosts", hostId, "logs", target],
     queryFn: () =>
-      apiFetch<{ host_id: string; container_name: string; tail: number; logs: string; error?: string }>(
-        `/hosts/${hostId}/logs?tail=200`,
+      apiFetch<HostLogsResponse>(
+        `/hosts/${hostId}/logs?tail=200&target=${target}`,
       ),
     enabled: !!hostId,
     refetchInterval,

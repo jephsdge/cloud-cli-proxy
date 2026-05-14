@@ -32,6 +32,7 @@ import {
   useHostLogs,
   useHostAction,
   useDeleteHost,
+  type HostLogTarget,
 } from "@/hooks/use-hosts";
 import { useTaskPolling } from "@/hooks/use-tasks";
 import { useSSE } from "@/hooks/use-sse";
@@ -54,9 +55,9 @@ import {
 } from "@/components/ui/alert-dialog";
 import { BindingManager } from "@/components/hosts/binding-manager";
 import { GatewayConfigManager } from "@/components/hosts/gateway-config-manager";
+import { IdentityManager } from "@/components/hosts/identity-manager";
 import { MountManager } from "@/components/hosts/mount-manager";
 import { PortManager } from "@/components/hosts/port-manager";
-import { TimezoneManager } from "@/components/hosts/timezone-manager";
 import { RotatePasswordDialog } from "@/components/users/rotate-password-dialog";
 import { ChangeRootPasswordDialog } from "@/components/hosts/change-root-password-dialog";
 import { ClaudeSettingsDialog } from "@/components/hosts/claude-settings-dialog";
@@ -162,6 +163,19 @@ function HostDetailPage() {
 
   const sshPort = data.connection_info?.ssh_port;
   const egressIP = bindings?.[0]?.egress_ip?.ip_address;
+  const fallbackIdentity = {
+    hostname: host.worker_identity?.hostname ?? host.hostname ?? displayName,
+    timezone: host.worker_identity?.timezone ?? host.timezone ?? "America/New_York",
+    machine_id: host.worker_identity?.machine_id ?? "",
+    locale: {
+      LANG: host.worker_identity?.locale?.LANG ?? "en_US.UTF-8",
+      LANGUAGE: host.worker_identity?.locale?.LANGUAGE ?? "en_US:en",
+      LC_ALL: host.worker_identity?.locale?.LC_ALL ?? "en_US.UTF-8",
+    },
+    vnc_resolution: host.worker_identity?.vnc_resolution ?? "1920x1080",
+    browser_language: host.worker_identity?.browser_language ?? "en-US",
+    browser_window_size: host.worker_identity?.browser_window_size ?? "1920x1080",
+  };
 
   function openVNC() {
     const token = getToken();
@@ -393,23 +407,18 @@ function HostDetailPage() {
             </div>
             <div>
               <span className="block text-sm font-semibold">配置详情</span>
-              <span className="text-xs text-muted-foreground">出口 IP 绑定、时区、挂载路径、端口映射、Gateway 配置</span>
+              <span className="text-xs text-muted-foreground">出口 IP 绑定、挂载路径、端口映射、系统指纹、Gateway 配置</span>
             </div>
           </div>
           <ChevronDown className={`h-4 w-4 text-muted-foreground transition-transform ${configOpen ? "" : "-rotate-90"}`} />
         </button>
         {configOpen && (
           <div className="border-t border-border/40 px-6 py-5">
-            <div className="grid grid-cols-1 lg:grid-cols-4">
+            <div className="grid grid-cols-1 lg:grid-cols-3">
               <div className="px-2 py-2 lg:border-r lg:border-border/40 lg:px-4">
                 <h3 className="mb-1 text-sm font-semibold">出口 IP 绑定</h3>
                 <p className="mb-4 text-xs text-muted-foreground">每台主机必须绑定一个出口 IP</p>
                 <BindingManager hostId={hostId} hostStatus={host.status} bindings={bindings} />
-              </div>
-              <div className="px-2 py-2 lg:border-r lg:border-border/40 lg:px-4">
-                <h3 className="mb-1 text-sm font-semibold">主机时区</h3>
-                <p className="mb-4 text-xs text-muted-foreground">影响容器内 TZ 环境变量</p>
-                <TimezoneManager hostId={hostId} hostStatus={host.status} timezone={host.timezone} />
               </div>
               <div className="px-2 py-2 lg:border-r lg:border-border/40 lg:px-4">
                 <h3 className="mb-1 text-sm font-semibold">挂载路径</h3>
@@ -421,6 +430,11 @@ function HostDetailPage() {
                 <p className="mb-4 text-xs text-muted-foreground">{isRunning ? "运行中不可编辑" : "停止中，可以编辑"}</p>
                 <PortManager hostId={hostId} hostStatus={host.status} ports={host.host_ports ?? []} />
               </div>
+            </div>
+            <div className="mt-5 border-t border-border/40 px-2 pt-5 lg:px-4">
+              <h3 className="mb-1 text-sm font-semibold">系统指纹</h3>
+              <p className="mb-4 text-xs text-muted-foreground">固定 worker 容器内可见身份，重建后进入容器生效</p>
+              <IdentityManager hostId={hostId} hostStatus={host.status} fallbackIdentity={fallbackIdentity} />
             </div>
             <div className="mt-5 border-t border-border/40 px-2 pt-5 lg:px-4">
               <h3 className="mb-1 text-sm font-semibold">Gateway 配置</h3>
@@ -704,7 +718,12 @@ function StatCard({ icon, label, value, mono, suffix }: {
 
 function HostLogsBlock({ hostId }: { hostId: string }) {
   const [autoRefresh, setAutoRefresh] = useState(true);
-  const { data, isLoading, refetch, isRefetching } = useHostLogs(hostId, autoRefresh ? 5000 : false);
+  const [target, setTarget] = useState<HostLogTarget>("worker");
+  const { data, isLoading, refetch, isRefetching } = useHostLogs(
+    hostId,
+    autoRefresh ? 5000 : false,
+    target,
+  );
 
   return (
     <Card className="overflow-hidden rounded-xl border-border/60 shadow-sm">
@@ -721,6 +740,20 @@ function HostLogsBlock({ hostId }: { hostId: string }) {
           )}
         </CardTitle>
         <div className="flex items-center gap-1.5">
+          <div className="mr-1 flex rounded-md border border-border/60 bg-background p-0.5">
+            {(["worker", "gateway"] as const).map((item) => (
+              <Button
+                key={item}
+                type="button"
+                variant={target === item ? "secondary" : "ghost"}
+                size="sm"
+                className="h-6 px-2 text-xs"
+                onClick={() => setTarget(item)}
+              >
+                {item === "worker" ? "Worker" : "Gateway"}
+              </Button>
+            ))}
+          </div>
           {data?.error && <span className="text-xs text-destructive">{data.error}</span>}
           <Button variant="ghost" size="sm" className="h-7 gap-1 text-xs" onClick={() => refetch()} disabled={isRefetching}>
             <RefreshCw className={`h-3 w-3 ${isRefetching ? "animate-spin" : ""}`} /> 刷新

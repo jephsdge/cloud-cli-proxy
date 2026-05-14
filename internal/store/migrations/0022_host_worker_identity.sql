@@ -1,0 +1,3 @@
+ALTER TABLE hosts
+	ADD COLUMN IF NOT EXISTS worker_identity JSONB NOT NULL DEFAULT '{}'::jsonb;
+

@@ -1,6 +1,6 @@
 import { useState } from "react";
-import { FileText, X, RefreshCw } from "lucide-react";
-import { useHostLogs } from "@/hooks/use-hosts";
+import { FileText, RefreshCw } from "lucide-react";
+import { useHostLogs, type HostLogTarget } from "@/hooks/use-hosts";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -16,8 +16,13 @@ interface HostLogsDialogProps {
 }
 
 export function HostLogsDialog({ hostId, open, onOpenChange }: HostLogsDialogProps) {
-  const { data, isLoading, refetch, isRefetching } = useHostLogs(hostId);
   const [autoRefresh, setAutoRefresh] = useState(true);
+  const [target, setTarget] = useState<HostLogTarget>("worker");
+  const { data, isLoading, refetch, isRefetching } = useHostLogs(
+    hostId,
+    autoRefresh ? 5000 : false,
+    target,
+  );
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -33,6 +38,20 @@ export function HostLogsDialog({ hostId, open, onOpenChange }: HostLogsDialogPro
         </DialogHeader>
 
         <div className="flex items-center gap-2 px-6 pb-2">
+          <div className="flex rounded-md border border-border/60 bg-background p-0.5">
+            {(["worker", "gateway"] as const).map((item) => (
+              <Button
+                key={item}
+                type="button"
+                variant={target === item ? "secondary" : "ghost"}
+                size="sm"
+                className="h-7 px-2 text-xs"
+                onClick={() => setTarget(item)}
+              >
+                {item === "worker" ? "Worker" : "Gateway"}
+              </Button>
+            ))}
+          </div>
           <Button
             variant="outline"
             size="sm"

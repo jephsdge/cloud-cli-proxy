@@ -35,27 +35,44 @@ type BindMount struct {
 	ReadOnly bool   `json:"read_only,omitempty"`
 }
 
+type WorkerIdentity struct {
+	Hostname          string               `json:"hostname,omitempty"`
+	Timezone          string               `json:"timezone,omitempty"`
+	MachineID         string               `json:"machine_id,omitempty"`
+	Locale            WorkerIdentityLocale `json:"locale,omitempty"`
+	VNCResolution     string               `json:"vnc_resolution,omitempty"`
+	BrowserLanguage   string               `json:"browser_language,omitempty"`
+	BrowserWindowSize string               `json:"browser_window_size,omitempty"`
+}
+
+type WorkerIdentityLocale struct {
+	Lang     string `json:"LANG,omitempty"`
+	Language string `json:"LANGUAGE,omitempty"`
+	LCAll    string `json:"LC_ALL,omitempty"`
+}
+
 type HostActionRequest struct {
-	TaskID        string            `json:"task_id"`
-	HostID        string            `json:"host_id"`
-	Action        HostAction        `json:"action"`
-	ImageName     string            `json:"image_name"`
-	DefaultUser   string            `json:"default_user"`
-	HomeMount     string            `json:"home_mount"`
-	RebuildMode   string            `json:"rebuild_mode"`
-	ContainerName string            `json:"container_name"`
-	HomeDir       string            `json:"home_dir"`
-	Labels        map[string]string `json:"labels"`
-	Timezone      string            `json:"timezone"`
-	Hostname      string            `json:"hostname"`
-	MemoryLimitMB int               `json:"memory_limit_mb,omitempty"`
-	CPULimit      float64           `json:"cpu_limit,omitempty"`
-	Username      string            `json:"username,omitempty"`
-	EntryPassword string            `json:"entry_password,omitempty"`
-	SSHPublicKey  string            `json:"ssh_public_key,omitempty"`
-	SSHPrivateKey string            `json:"ssh_private_key,omitempty"`
-	SSHKeys       []SSHKeyEntry     `json:"ssh_keys,omitempty"`
-	Volumes       []VolumeMount     `json:"volumes,omitempty"`
+	TaskID         string            `json:"task_id"`
+	HostID         string            `json:"host_id"`
+	Action         HostAction        `json:"action"`
+	ImageName      string            `json:"image_name"`
+	DefaultUser    string            `json:"default_user"`
+	HomeMount      string            `json:"home_mount"`
+	RebuildMode    string            `json:"rebuild_mode"`
+	ContainerName  string            `json:"container_name"`
+	HomeDir        string            `json:"home_dir"`
+	Labels         map[string]string `json:"labels"`
+	Timezone       string            `json:"timezone"`
+	Hostname       string            `json:"hostname"`
+	WorkerIdentity WorkerIdentity    `json:"worker_identity,omitempty"`
+	MemoryLimitMB  int               `json:"memory_limit_mb,omitempty"`
+	CPULimit       float64           `json:"cpu_limit,omitempty"`
+	Username       string            `json:"username,omitempty"`
+	EntryPassword  string            `json:"entry_password,omitempty"`
+	SSHPublicKey   string            `json:"ssh_public_key,omitempty"`
+	SSHPrivateKey  string            `json:"ssh_private_key,omitempty"`
+	SSHKeys        []SSHKeyEntry     `json:"ssh_keys,omitempty"`
+	Volumes        []VolumeMount     `json:"volumes,omitempty"`
 	// ClaudeAccountID 携带 Phase 30 D-09 规定的账号维度标识，供 Phase 33 worker
 	// 组装 `claude-state-{claude_account_id}` volume 与容器 label 使用。
 	// `omitempty` 是契约：空串表示"本次 action 无账号维度"，禁止写入空字符串来表达"已分配但未知"。

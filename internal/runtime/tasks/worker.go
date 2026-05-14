@@ -235,6 +235,8 @@ func actionToHostStatus(action agentapi.HostAction) string {
 
 func (w *Worker) buildCreateArgs(request agentapi.HostActionRequest, containerName, hostname string) ([]string, error) {
 	homeDir := firstNonEmpty(request.HomeDir, hostHomeDir(request.HostID))
+	identity := request.WorkerIdentity
+	locale := identity.Locale
 
 	args := []string{
 		"create",
@@ -271,12 +273,16 @@ func (w *Worker) buildCreateArgs(request agentapi.HostActionRequest, containerNa
 
 	linuxUser := firstNonEmpty(request.DefaultUser, "workspace")
 	args = append(args,
-		"-e", "TZ="+firstNonEmpty(request.Timezone, "America/New_York"),
-		"-e", "LANG=en_US.UTF-8",
-		"-e", "LANGUAGE=en_US:en",
-		"-e", "LC_ALL=en_US.UTF-8",
+		"-e", "TZ="+firstNonEmpty(identity.Timezone, request.Timezone, "America/New_York"),
+		"-e", "LANG="+firstNonEmpty(locale.Lang, "en_US.UTF-8"),
+		"-e", "LANGUAGE="+firstNonEmpty(locale.Language, "en_US:en"),
+		"-e", "LC_ALL="+firstNonEmpty(locale.LCAll, "en_US.UTF-8"),
 		"-e", "CONTAINER_USER="+linuxUser,
 		"-e", "CONTAINER_SSH_PASSWORD="+request.EntryPassword,
+		"-e", "CLOUDPROXY_MACHINE_ID="+identity.MachineID,
+		"-e", "CLOUDPROXY_VNC_RESOLUTION="+firstNonEmpty(identity.VNCResolution, "1920x1080"),
+		"-e", "CLOUDPROXY_BROWSER_LANGUAGE="+firstNonEmpty(identity.BrowserLanguage, "en-US"),
+		"-e", "CLOUDPROXY_BROWSER_WINDOW_SIZE="+firstNonEmpty(identity.BrowserWindowSize, "1920x1080"),
 		"-v", fmt.Sprintf("%s:%s", homeDir, firstNonEmpty(request.HomeMount, defaultWorkspaceMount)),
 	)
 
@@ -404,6 +410,9 @@ func (w *Worker) createHost(ctx context.Context, request agentapi.HostActionRequ
 	}
 
 	hostname := request.Hostname
+	if request.WorkerIdentity.Hostname != "" {
+		hostname = request.WorkerIdentity.Hostname
+	}
 	if hostname == "" {
 		hostname = containerName
 	}

@@ -380,13 +380,18 @@ func (r *Repository) UpsertHost(ctx context.Context, params UpsertHostParams) (H
 	if err != nil {
 		return Host{}, fmt.Errorf("marshal host ports: %w", err)
 	}
+	workerIdentityJSON, err := json.Marshal(params.WorkerIdentity)
+	if err != nil {
+		return Host{}, fmt.Errorf("marshal worker identity: %w", err)
+	}
 
 	var item Host
 	var rawMounts json.RawMessage
 	var rawPorts json.RawMessage
+	var rawWorkerIdentity json.RawMessage
 	if err := r.db.QueryRow(ctx, `
-		INSERT INTO hosts (user_id, status, short_id, template_image_ref, home_volume_name, slot_key, timezone, hostname, memory_limit_mb, cpu_limit, disk_limit_gb, host_mounts, host_ports)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+		INSERT INTO hosts (user_id, status, short_id, template_image_ref, home_volume_name, slot_key, timezone, hostname, memory_limit_mb, cpu_limit, disk_limit_gb, host_mounts, host_ports, worker_identity)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
 		ON CONFLICT (user_id, slot_key)
 		DO UPDATE SET
 			status = EXCLUDED.status,
@@ -399,10 +404,11 @@ func (r *Repository) UpsertHost(ctx context.Context, params UpsertHostParams) (H
 			disk_limit_gb = EXCLUDED.disk_limit_gb,
 			host_mounts = EXCLUDED.host_mounts,
 			host_ports = EXCLUDED.host_ports,
+			worker_identity = EXCLUDED.worker_identity,
 			updated_at = NOW()
 		RETURNING id::text, user_id::text, status, COALESCE(short_id, ''),
 		          template_image_ref, home_volume_name, slot_key, timezone, hostname,
-		          memory_limit_mb, cpu_limit, disk_limit_gb, host_mounts, host_ports, created_at, updated_at
+		          memory_limit_mb, cpu_limit, disk_limit_gb, host_mounts, host_ports, COALESCE(worker_identity, '{}'::jsonb), created_at, updated_at
 	`,
 		params.UserID,
 		params.Status,
@@ -417,6 +423,7 @@ func (r *Repository) UpsertHost(ctx context.Context, params UpsertHostParams) (H
 		diskLimitGB,
 		mountsJSON,
 		portsJSON,
+		workerIdentityJSON,
 	).Scan(
 		&item.ID,
 		&item.UserID,
@@ -432,6 +439,7 @@ func (r *Repository) UpsertHost(ctx context.Context, params UpsertHostParams) (H
 		&item.DiskLimitGB,
 		&rawMounts,
 		&rawPorts,
+		&rawWorkerIdentity,
 		&item.CreatedAt,
 		&item.UpdatedAt,
 	); err != nil {
@@ -442,6 +450,9 @@ func (r *Repository) UpsertHost(ctx context.Context, params UpsertHostParams) (H
 	}
 	if len(rawPorts) > 0 {
 		_ = json.Unmarshal(rawPorts, &item.HostPorts)
+	}
+	if len(rawWorkerIdentity) > 0 {
+		_ = json.Unmarshal(rawWorkerIdentity, &item.WorkerIdentity)
 	}
 
 	return item, nil
@@ -736,7 +747,7 @@ func (r *Repository) GetEgressIPByHost(ctx context.Context, hostID string) (Egre
 
 // getHostSQL 将 SQL 文本提升为包级常量，方便仓储层回归测试断言。
 const getHostSQL = `
-	SELECT id::text, user_id::text, status, COALESCE(short_id, ''), template_image_ref, home_volume_name, slot_key, timezone, hostname, memory_limit_mb, cpu_limit, disk_limit_gb, host_mounts, host_ports, COALESCE(gateway_config_mode, 'auto'), gateway_config, created_at, updated_at
+	SELECT id::text, user_id::text, status, COALESCE(short_id, ''), template_image_ref, home_volume_name, slot_key, timezone, hostname, memory_limit_mb, cpu_limit, disk_limit_gb, host_mounts, host_ports, COALESCE(gateway_config_mode, 'auto'), gateway_config, COALESCE(worker_identity, '{}'::jsonb), created_at, updated_at
 	FROM hosts
 	WHERE id = $1
 `
@@ -746,6 +757,7 @@ func (r *Repository) GetHost(ctx context.Context, hostID string) (Host, error) {
 	var rawMounts json.RawMessage
 	var rawPorts json.RawMessage
 	var rawGatewayConfig json.RawMessage
+	var rawWorkerIdentity json.RawMessage
 	if err := r.db.QueryRow(ctx, getHostSQL, hostID).Scan(
 		&item.ID,
 		&item.UserID,
@@ -763,6 +775,7 @@ func (r *Repository) GetHost(ctx context.Context, hostID string) (Host, error) {
 		&rawPorts,
 		&item.GatewayConfigMode,
 		&rawGatewayConfig,
+		&rawWorkerIdentity,
 		&item.CreatedAt,
 		&item.UpdatedAt,
 	); err != nil {
@@ -780,6 +793,9 @@ func (r *Repository) GetHost(ctx context.Context, hostID string) (Host, error) {
 	rawGatewayConfig = bytes.TrimSpace(rawGatewayConfig)
 	if item.GatewayConfigMode == GatewayConfigModeCustom && len(rawGatewayConfig) > 0 && !bytes.Equal(rawGatewayConfig, []byte("null")) {
 		item.GatewayConfig = rawGatewayConfig
+	}
+	if len(rawWorkerIdentity) > 0 {
+		_ = json.Unmarshal(rawWorkerIdentity, &item.WorkerIdentity)
 	}
 
 	return item, nil
@@ -1561,9 +1577,37 @@ func (r *Repository) UpdateHostPorts(ctx context.Context, hostID string, ports H
 }
 
 func (r *Repository) UpdateHostTimezone(ctx context.Context, hostID, timezone string) error {
-	tag, err := r.db.Exec(ctx, `UPDATE hosts SET timezone = $1, updated_at = NOW() WHERE id = $2`, timezone, hostID)
+	tag, err := r.db.Exec(ctx, `
+		UPDATE hosts
+		SET timezone = $1,
+		    worker_identity = jsonb_set(COALESCE(worker_identity, '{}'::jsonb), '{timezone}', to_jsonb($1::text), true),
+		    updated_at = NOW()
+		WHERE id = $2
+	`, timezone, hostID)
 	if err != nil {
 		return fmt.Errorf("update host timezone: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return pgx.ErrNoRows
+	}
+	return nil
+}
+
+func (r *Repository) UpdateHostIdentity(ctx context.Context, hostID string, identity WorkerIdentity) error {
+	raw, err := json.Marshal(identity)
+	if err != nil {
+		return fmt.Errorf("marshal worker identity: %w", err)
+	}
+	tag, err := r.db.Exec(ctx, `
+		UPDATE hosts
+		SET hostname = $1,
+		    timezone = $2,
+		    worker_identity = $3,
+		    updated_at = NOW()
+		WHERE id = $4
+	`, identity.Hostname, identity.Timezone, raw, hostID)
+	if err != nil {
+		return fmt.Errorf("update host identity: %w", err)
 	}
 	if tag.RowsAffected() == 0 {
 		return pgx.ErrNoRows

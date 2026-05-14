@@ -30,6 +30,8 @@ type stubHostStore struct {
 	runningErr    error
 	timezone      string
 	timezoneErr   error
+	identity      repository.WorkerIdentity
+	identityErr   error
 }
 
 func (s *stubHostStore) ListHostsWithUsername(_ context.Context) ([]repository.HostWithUsername, error) {
@@ -83,6 +85,11 @@ func (s *stubHostStore) UpdateHostPorts(_ context.Context, _ string, _ repositor
 func (s *stubHostStore) UpdateHostTimezone(_ context.Context, _ string, timezone string) error {
 	s.timezone = timezone
 	return s.timezoneErr
+}
+
+func (s *stubHostStore) UpdateHostIdentity(_ context.Context, _ string, identity repository.WorkerIdentity) error {
+	s.identity = identity
+	return s.identityErr
 }
 
 func (s *stubHostStore) UpdateHostGatewayConfig(_ context.Context, _, _ string, _ json.RawMessage) error {
@@ -306,12 +313,86 @@ func TestAdminHostsUpdateTimezone(t *testing.T) {
 	}
 }
 
+func TestAdminHostsUpdateIdentity(t *testing.T) {
+	now := time.Now().Truncate(time.Second)
+	store := &stubHostStore{
+		detail: repository.HostDetail{
+			Host: repository.Host{
+				ID:        "h1",
+				UserID:    "u1",
+				Status:    "stopped",
+				Hostname:  "old-host",
+				Timezone:  "America/Los_Angeles",
+				CreatedAt: now,
+				UpdatedAt: now,
+			},
+			User: repository.User{ID: "u1", Username: "testuser", Status: "active", CreatedAt: now, UpdatedAt: now},
+		},
+	}
+	router := adminTestRouter(t, Dependencies{
+		Logger:        slog.Default(),
+		AdminHosts:    store,
+		HostActions:   &stubQueuer{},
+		EventRecorder: &stubEventRecorder{},
+	})
+	srv := httptest.NewServer(router)
+	defer srv.Close()
+
+	body := `{"identity":{"hostname":"fixed-host","timezone":"America/New_York","machine_id":"0123456789abcdef0123456789abcdef","locale":{"LANG":"en_US.UTF-8","LANGUAGE":"en_US:en","LC_ALL":"en_US.UTF-8"},"vnc_resolution":"1920x1080","browser_language":"en-US","browser_window_size":"1365x768"}}`
+	req, _ := nethttp.NewRequest("PUT", srv.URL+"/v1/admin/hosts/h1/identity", strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer "+validAdminToken(t))
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := nethttp.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("request failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != nethttp.StatusOK {
+		var respBody map[string]any
+		_ = json.NewDecoder(resp.Body).Decode(&respBody)
+		t.Fatalf("status = %d, want 200; body = %v", resp.StatusCode, respBody)
+	}
+	if store.identity.Hostname != "fixed-host" {
+		t.Fatalf("hostname = %q, want fixed-host", store.identity.Hostname)
+	}
+	if store.identity.Timezone != "America/New_York" {
+		t.Fatalf("timezone = %q, want America/New_York", store.identity.Timezone)
+	}
+	if store.identity.MachineID != "0123456789abcdef0123456789abcdef" {
+		t.Fatalf("machine_id = %q", store.identity.MachineID)
+	}
+}
+
 func TestNormalizeHostTimezoneRejectsInvalidValue(t *testing.T) {
 	if _, err := normalizeHostTimezone("../etc/passwd"); err == nil {
 		t.Fatal("expected invalid timezone error")
 	}
 	if got, err := normalizeHostTimezone(" America/New_York "); err != nil || got != "America/New_York" {
 		t.Fatalf("normalizeHostTimezone = %q, %v; want America/New_York, nil", got, err)
+	}
+}
+
+func TestNormalizeWorkerIdentityRejectsInvalidMachineID(t *testing.T) {
+	fallback := defaultWorkerIdentity("host-1", "America/New_York", "")
+	_, err := normalizeWorkerIdentity(repository.WorkerIdentity{MachineID: "not-hex"}, fallback)
+	if err == nil {
+		t.Fatal("expected invalid machine_id error")
+	}
+}
+
+func TestNormalizeWorkerIdentityUsesFallbacks(t *testing.T) {
+	fallback := defaultWorkerIdentity("host-1", "America/New_York", "0123456789abcdef0123456789abcdef")
+	identity, err := normalizeWorkerIdentity(repository.WorkerIdentity{BrowserWindowSize: "1280X720"}, fallback)
+	if err != nil {
+		t.Fatalf("normalize worker identity: %v", err)
+	}
+	if identity.Hostname != "host-1" || identity.Timezone != "America/New_York" {
+		t.Fatalf("identity fallback mismatch: %+v", identity)
+	}
+	if identity.BrowserWindowSize != "1280x720" {
+		t.Fatalf("browser_window_size = %q, want 1280x720", identity.BrowserWindowSize)
 	}
 }
 
@@ -323,6 +404,59 @@ func TestHostTimezoneRequiresRebuild(t *testing.T) {
 	}
 	if hostTimezoneRequiresRebuild("pending") {
 		t.Fatal("pending host should not require rebuild")
+	}
+}
+
+func TestHostLogsContainerName(t *testing.T) {
+	tests := []struct {
+		name          string
+		target        string
+		wantName      string
+		wantTarget    string
+		wantSupported bool
+	}{
+		{
+			name:          "default worker",
+			target:        "",
+			wantName:      "cloudproxy-h1",
+			wantTarget:    "worker",
+			wantSupported: true,
+		},
+		{
+			name:          "worker",
+			target:        "worker",
+			wantName:      "cloudproxy-h1",
+			wantTarget:    "worker",
+			wantSupported: true,
+		},
+		{
+			name:          "gateway",
+			target:        "gateway",
+			wantName:      "cloudproxy-gw-h1",
+			wantTarget:    "gateway",
+			wantSupported: true,
+		},
+		{
+			name:          "unsupported",
+			target:        "postgres",
+			wantTarget:    "postgres",
+			wantSupported: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			gotName, gotTarget, gotSupported := hostLogsContainerName("h1", tt.target)
+			if gotSupported != tt.wantSupported {
+				t.Fatalf("supported = %v, want %v", gotSupported, tt.wantSupported)
+			}
+			if gotName != tt.wantName {
+				t.Fatalf("container = %q, want %q", gotName, tt.wantName)
+			}
+			if gotTarget != tt.wantTarget {
+				t.Fatalf("target = %q, want %q", gotTarget, tt.wantTarget)
+			}
+		})
 	}
 }
 

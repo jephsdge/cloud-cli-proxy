@@ -44,6 +44,7 @@ type AdminHostStore interface {
 	UpdateHostMounts(ctx context.Context, hostID string, mounts repository.HostMounts) error
 	UpdateHostPorts(ctx context.Context, hostID string, ports repository.HostPorts) error
 	UpdateHostTimezone(ctx context.Context, hostID, timezone string) error
+	UpdateHostIdentity(ctx context.Context, hostID string, identity repository.WorkerIdentity) error
 	UpdateHostGatewayConfig(ctx context.Context, hostID, mode string, config json.RawMessage) error
 }
 
@@ -152,14 +153,15 @@ func (h *AdminHostsHandler) Get() nethttp.Handler {
 func (h *AdminHostsHandler) Create() nethttp.Handler {
 	return nethttp.HandlerFunc(func(w nethttp.ResponseWriter, r *nethttp.Request) {
 		var body struct {
-			UserID        string                `json:"user_id"`
-			EgressIPID    string                `json:"egress_ip_id"`
-			Timezone      string                `json:"timezone"`
-			MemoryLimitMB int                   `json:"memory_limit_mb"`
-			CPULimit      float64               `json:"cpu_limit"`
-			DiskLimitGB   int                   `json:"disk_limit_gb"`
-			HostMounts    repository.HostMounts `json:"host_mounts"`
-			HostPorts     repository.HostPorts  `json:"host_ports"`
+			UserID         string                    `json:"user_id"`
+			EgressIPID     string                    `json:"egress_ip_id"`
+			Timezone       string                    `json:"timezone"`
+			MemoryLimitMB  int                       `json:"memory_limit_mb"`
+			CPULimit       float64                   `json:"cpu_limit"`
+			DiskLimitGB    int                       `json:"disk_limit_gb"`
+			HostMounts     repository.HostMounts     `json:"host_mounts"`
+			HostPorts      repository.HostPorts      `json:"host_ports"`
+			WorkerIdentity repository.WorkerIdentity `json:"worker_identity"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.UserID == "" {
 			writeJSON(w, nethttp.StatusBadRequest, map[string]string{"error": "user_id is required"})
@@ -175,6 +177,13 @@ func (h *AdminHostsHandler) Create() nethttp.Handler {
 			timezone = "America/New_York"
 		}
 		hostname := generateHostname()
+		identity, identityErr := normalizeWorkerIdentity(body.WorkerIdentity, defaultWorkerIdentity(hostname, timezone, mustGenerateMachineID()))
+		if identityErr != nil {
+			writeJSON(w, nethttp.StatusBadRequest, map[string]string{"error": identityErr.Error()})
+			return
+		}
+		hostname = identity.Hostname
+		timezone = identity.Timezone
 		hostShortID := credgen.GenerateShortID()
 
 		imageLockPath := h.imageLockPath
@@ -235,6 +244,7 @@ func (h *AdminHostsHandler) Create() nethttp.Handler {
 				DiskLimitGB:      body.DiskLimitGB,
 				HostMounts:       expandHostMountSources(body.HostMounts),
 				HostPorts:        body.HostPorts,
+				WorkerIdentity:   identity,
 			})
 			if err == nil {
 				break
@@ -1121,6 +1131,12 @@ type updateHostTimezoneResponse struct {
 	PreviousTimezone string `json:"previous_timezone,omitempty"`
 }
 
+type hostIdentityResponse struct {
+	HostID          string                    `json:"host_id"`
+	Identity        repository.WorkerIdentity `json:"identity"`
+	RequiresRebuild bool                      `json:"requires_rebuild"`
+}
+
 func (h *AdminHostsHandler) UpdateTimezone() nethttp.Handler {
 	return nethttp.HandlerFunc(func(w nethttp.ResponseWriter, r *nethttp.Request) {
 		hostID := r.PathValue("hostID")
@@ -1181,6 +1197,101 @@ func (h *AdminHostsHandler) UpdateTimezone() nethttp.Handler {
 			Timezone:         timezone,
 			RequiresRebuild:  requiresRebuild,
 			PreviousTimezone: detail.Host.Timezone,
+		})
+	})
+}
+
+func (h *AdminHostsHandler) GetIdentity() nethttp.Handler {
+	return nethttp.HandlerFunc(func(w nethttp.ResponseWriter, r *nethttp.Request) {
+		hostID := r.PathValue("hostID")
+		detail, err := h.store.GetHostDetail(r.Context(), hostID)
+		if err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				writeJSON(w, nethttp.StatusNotFound, map[string]string{"error": "host not found"})
+				return
+			}
+			h.logger.Error("get host identity failed", "host_id", hostID, "error", err)
+			writeJSON(w, nethttp.StatusInternalServerError, map[string]string{"error": "get host identity failed"})
+			return
+		}
+
+		identity := workerIdentityWithDefaults(detail.Host.WorkerIdentity, defaultWorkerIdentity(detail.Host.Hostname, detail.Host.Timezone, ""))
+		writeJSON(w, nethttp.StatusOK, hostIdentityResponse{
+			HostID:          hostID,
+			Identity:        identity,
+			RequiresRebuild: hostTimezoneRequiresRebuild(detail.Host.Status),
+		})
+	})
+}
+
+func (h *AdminHostsHandler) UpdateIdentity() nethttp.Handler {
+	return nethttp.HandlerFunc(func(w nethttp.ResponseWriter, r *nethttp.Request) {
+		hostID := r.PathValue("hostID")
+		var body struct {
+			Identity       repository.WorkerIdentity `json:"identity"`
+			WorkerIdentity repository.WorkerIdentity `json:"worker_identity"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			writeJSON(w, nethttp.StatusBadRequest, map[string]string{"error": "invalid request body"})
+			return
+		}
+
+		input := body.Identity
+		if workerIdentityIsZero(input) {
+			input = body.WorkerIdentity
+		}
+
+		detail, err := h.store.GetHostDetail(r.Context(), hostID)
+		if err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				writeJSON(w, nethttp.StatusNotFound, map[string]string{"error": "host not found"})
+				return
+			}
+			h.logger.Error("get host for identity update failed", "host_id", hostID, "error", err)
+			writeJSON(w, nethttp.StatusInternalServerError, map[string]string{"error": "get host failed"})
+			return
+		}
+
+		fallback := workerIdentityWithDefaults(detail.Host.WorkerIdentity, defaultWorkerIdentity(detail.Host.Hostname, detail.Host.Timezone, ""))
+		identity, err := normalizeWorkerIdentity(input, fallback)
+		if err != nil {
+			writeJSON(w, nethttp.StatusBadRequest, map[string]string{"error": err.Error()})
+			return
+		}
+
+		if err := h.store.UpdateHostIdentity(r.Context(), hostID, identity); err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				writeJSON(w, nethttp.StatusNotFound, map[string]string{"error": "host not found"})
+				return
+			}
+			h.logger.Error("update host identity failed", "host_id", hostID, "error", err)
+			writeJSON(w, nethttp.StatusInternalServerError, map[string]string{"error": "update host identity failed"})
+			return
+		}
+
+		requiresRebuild := hostTimezoneRequiresRebuild(detail.Host.Status)
+		if h.events != nil {
+			hid := hostID
+			if _, err := h.events.RecordEvent(r.Context(), repository.RecordEventParams{
+				HostID: &hid, Level: "info", Type: "admin.host.update_identity",
+				Message: "管理员更新主机系统指纹",
+				Metadata: map[string]any{
+					"operator":         "admin",
+					"hostname":         identity.Hostname,
+					"timezone":         identity.Timezone,
+					"vnc_resolution":   identity.VNCResolution,
+					"browser_language": identity.BrowserLanguage,
+					"requires_rebuild": requiresRebuild,
+				},
+			}); err != nil {
+				h.logger.Error("record event failed", "type", "admin.host.update_identity", "error", err)
+			}
+		}
+
+		writeJSON(w, nethttp.StatusOK, hostIdentityResponse{
+			HostID:          hostID,
+			Identity:        identity,
+			RequiresRebuild: requiresRebuild,
 		})
 	})
 }
@@ -1449,6 +1560,214 @@ func hostTimezoneRequiresRebuild(status string) bool {
 	}
 }
 
+func mustGenerateMachineID() string {
+	buf := make([]byte, 16)
+	if _, err := rand.Read(buf); err != nil {
+		return "00000000000000000000000000000000"
+	}
+	return fmt.Sprintf("%x", buf)
+}
+
+func defaultWorkerIdentity(hostname, timezone, machineID string) repository.WorkerIdentity {
+	return repository.WorkerIdentity{
+		Hostname:  strings.TrimSpace(hostname),
+		Timezone:  strings.TrimSpace(timezone),
+		MachineID: strings.ToLower(strings.TrimSpace(machineID)),
+		Locale: repository.WorkerIdentityLocale{
+			Lang:     "en_US.UTF-8",
+			Language: "en_US:en",
+			LCAll:    "en_US.UTF-8",
+		},
+		VNCResolution:     "1920x1080",
+		BrowserLanguage:   "en-US",
+		BrowserWindowSize: "1920x1080",
+	}
+}
+
+func workerIdentityWithDefaults(input, fallback repository.WorkerIdentity) repository.WorkerIdentity {
+	out := fallback
+	if input.Hostname != "" {
+		out.Hostname = input.Hostname
+	}
+	if input.Timezone != "" {
+		out.Timezone = input.Timezone
+	}
+	if input.MachineID != "" {
+		out.MachineID = input.MachineID
+	}
+	if input.Locale.Lang != "" {
+		out.Locale.Lang = input.Locale.Lang
+	}
+	if input.Locale.Language != "" {
+		out.Locale.Language = input.Locale.Language
+	}
+	if input.Locale.LCAll != "" {
+		out.Locale.LCAll = input.Locale.LCAll
+	}
+	if input.VNCResolution != "" {
+		out.VNCResolution = input.VNCResolution
+	}
+	if input.BrowserLanguage != "" {
+		out.BrowserLanguage = input.BrowserLanguage
+	}
+	if input.BrowserWindowSize != "" {
+		out.BrowserWindowSize = input.BrowserWindowSize
+	}
+	return out
+}
+
+func workerIdentityIsZero(identity repository.WorkerIdentity) bool {
+	return strings.TrimSpace(identity.Hostname) == "" &&
+		strings.TrimSpace(identity.Timezone) == "" &&
+		strings.TrimSpace(identity.MachineID) == "" &&
+		strings.TrimSpace(identity.Locale.Lang) == "" &&
+		strings.TrimSpace(identity.Locale.Language) == "" &&
+		strings.TrimSpace(identity.Locale.LCAll) == "" &&
+		strings.TrimSpace(identity.VNCResolution) == "" &&
+		strings.TrimSpace(identity.BrowserLanguage) == "" &&
+		strings.TrimSpace(identity.BrowserWindowSize) == ""
+}
+
+func normalizeWorkerIdentity(input, fallback repository.WorkerIdentity) (repository.WorkerIdentity, error) {
+	identity := workerIdentityWithDefaults(input, fallback)
+
+	hostname, err := normalizeWorkerHostname(identity.Hostname)
+	if err != nil {
+		return repository.WorkerIdentity{}, err
+	}
+	timezone, err := normalizeHostTimezone(identity.Timezone)
+	if err != nil {
+		return repository.WorkerIdentity{}, err
+	}
+	machineID, err := normalizeWorkerMachineID(identity.MachineID)
+	if err != nil {
+		return repository.WorkerIdentity{}, err
+	}
+	locale, err := normalizeWorkerLocale(identity.Locale)
+	if err != nil {
+		return repository.WorkerIdentity{}, err
+	}
+	vncResolution, err := normalizeResolution(identity.VNCResolution, "vnc_resolution")
+	if err != nil {
+		return repository.WorkerIdentity{}, err
+	}
+	browserWindowSize, err := normalizeResolution(identity.BrowserWindowSize, "browser_window_size")
+	if err != nil {
+		return repository.WorkerIdentity{}, err
+	}
+	browserLanguage, err := normalizeWorkerToken(identity.BrowserLanguage, "browser_language", 128, "-_,.;=")
+	if err != nil {
+		return repository.WorkerIdentity{}, err
+	}
+
+	return repository.WorkerIdentity{
+		Hostname:          hostname,
+		Timezone:          timezone,
+		MachineID:         machineID,
+		Locale:            locale,
+		VNCResolution:     vncResolution,
+		BrowserLanguage:   browserLanguage,
+		BrowserWindowSize: browserWindowSize,
+	}, nil
+}
+
+func normalizeWorkerHostname(value string) (string, error) {
+	hostname := strings.TrimSpace(value)
+	if hostname == "" {
+		return "", fmt.Errorf("hostname is required")
+	}
+	if len(hostname) > 63 {
+		return "", fmt.Errorf("hostname is too long")
+	}
+	if hostname[0] == '-' || hostname[len(hostname)-1] == '-' {
+		return "", fmt.Errorf("hostname must not start or end with '-'")
+	}
+	for _, r := range hostname {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '-' {
+			continue
+		}
+		return "", fmt.Errorf("hostname contains invalid character %q", r)
+	}
+	return hostname, nil
+}
+
+func normalizeWorkerMachineID(value string) (string, error) {
+	machineID := strings.ToLower(strings.TrimSpace(value))
+	if machineID == "" {
+		machineID = mustGenerateMachineID()
+	}
+	if len(machineID) != 32 {
+		return "", fmt.Errorf("machine_id must be 32 hex characters")
+	}
+	for _, r := range machineID {
+		if (r >= '0' && r <= '9') || (r >= 'a' && r <= 'f') {
+			continue
+		}
+		return "", fmt.Errorf("machine_id must be 32 hex characters")
+	}
+	return machineID, nil
+}
+
+func normalizeWorkerLocale(locale repository.WorkerIdentityLocale) (repository.WorkerIdentityLocale, error) {
+	lang, err := normalizeWorkerToken(locale.Lang, "LANG", 64, "_.@-")
+	if err != nil {
+		return repository.WorkerIdentityLocale{}, err
+	}
+	language, err := normalizeWorkerToken(locale.Language, "LANGUAGE", 128, "_.@:-")
+	if err != nil {
+		return repository.WorkerIdentityLocale{}, err
+	}
+	lcAll, err := normalizeWorkerToken(locale.LCAll, "LC_ALL", 64, "_.@-")
+	if err != nil {
+		return repository.WorkerIdentityLocale{}, err
+	}
+	return repository.WorkerIdentityLocale{
+		Lang:     lang,
+		Language: language,
+		LCAll:    lcAll,
+	}, nil
+}
+
+func normalizeWorkerToken(value, field string, maxLen int, extraAllowed string) (string, error) {
+	token := strings.TrimSpace(value)
+	if token == "" {
+		return "", fmt.Errorf("%s is required", field)
+	}
+	if len(token) > maxLen {
+		return "", fmt.Errorf("%s is too long", field)
+	}
+	for _, r := range token {
+		if (r >= 'A' && r <= 'Z') || (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') {
+			continue
+		}
+		if strings.ContainsRune(extraAllowed, r) {
+			continue
+		}
+		return "", fmt.Errorf("%s contains invalid character %q", field, r)
+	}
+	return token, nil
+}
+
+func normalizeResolution(value, field string) (string, error) {
+	resolution := strings.ToLower(strings.TrimSpace(value))
+	widthRaw, heightRaw, ok := strings.Cut(resolution, "x")
+	if !ok || widthRaw == "" || heightRaw == "" {
+		return "", fmt.Errorf("%s must use WIDTHxHEIGHT format", field)
+	}
+	width, err := strconv.Atoi(widthRaw)
+	if err != nil {
+		return "", fmt.Errorf("%s width is invalid", field)
+	}
+	height, err := strconv.Atoi(heightRaw)
+	if err != nil {
+		return "", fmt.Errorf("%s height is invalid", field)
+	}
+	if width < 640 || width > 7680 || height < 480 || height > 4320 {
+		return "", fmt.Errorf("%s is out of supported range", field)
+	}
+	return fmt.Sprintf("%dx%d", width, height), nil
+}
+
 var applyRunningGatewayConfig = func(ctx context.Context, hostID string, config []byte) error {
 	configDir := network.GatewayConfigDir(hostID)
 	if err := os.MkdirAll(configDir, 0o755); err != nil {
@@ -1569,7 +1888,12 @@ func (h *AdminHostsHandler) GetLogs() nethttp.Handler {
 			tailN = 500
 		}
 
-		containerName := "cloudproxy-" + hostID
+		target := strings.TrimSpace(r.URL.Query().Get("target"))
+		containerName, target, ok := hostLogsContainerName(hostID, target)
+		if !ok {
+			writeJSON(w, nethttp.StatusBadRequest, map[string]string{"error": "target must be worker or gateway"})
+			return
+		}
 		ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
 		defer cancel()
 
@@ -1578,6 +1902,7 @@ func (h *AdminHostsHandler) GetLogs() nethttp.Handler {
 
 		result := map[string]any{
 			"host_id":        hostID,
+			"target":         target,
 			"container_name": containerName,
 			"tail":           tailN,
 			"logs":           string(output),
@@ -1589,4 +1914,18 @@ func (h *AdminHostsHandler) GetLogs() nethttp.Handler {
 
 		writeJSON(w, nethttp.StatusOK, result)
 	})
+}
+
+func hostLogsContainerName(hostID, target string) (string, string, bool) {
+	if target == "" {
+		target = "worker"
+	}
+	switch target {
+	case "worker":
+		return "cloudproxy-" + hostID, target, true
+	case "gateway":
+		return "cloudproxy-gw-" + hostID, target, true
+	default:
+		return "", target, false
+	}
 }

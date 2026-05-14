@@ -17,6 +17,13 @@ if [[ -z "${browser_cmd}" ]]; then
     -e bash -lc "echo Chromium is not installed.; exec bash"
 fi
 
+browser_language="${CLOUDPROXY_BROWSER_LANGUAGE:-en-US}"
+browser_window_size="${CLOUDPROXY_BROWSER_WINDOW_SIZE:-1920x1080}"
+if ! [[ "${browser_window_size}" =~ ^[0-9]{3,4}x[0-9]{3,4}$ ]]; then
+  browser_window_size="1920x1080"
+fi
+browser_window_size="${browser_window_size/x/,}"
+
 if [[ $# -gt 0 ]]; then
   exec "${browser_cmd}" "$@"
 fi
@@ -31,6 +38,7 @@ exec "${browser_cmd}" \
   --disable-features=WebRtcHideLocalIpsWithMdns \
   --enforce-webrtc-ip-permission-check \
   --force-webrtc-ip-handling-policy=disable_non_proxied_udp \
+  --lang="${browser_language}" \
   --window-position=0,0 \
-  --window-size=1920,1080 \
+  --window-size="${browser_window_size}" \
   "https://www.google.com"

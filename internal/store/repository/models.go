@@ -53,8 +53,25 @@ type Host struct {
 	HostPorts         HostPorts       `json:"host_ports"`
 	GatewayConfigMode string          `json:"gateway_config_mode,omitempty"`
 	GatewayConfig     json.RawMessage `json:"gateway_config,omitempty"`
+	WorkerIdentity    WorkerIdentity  `json:"worker_identity"`
 	CreatedAt         time.Time       `json:"created_at"`
 	UpdatedAt         time.Time       `json:"updated_at"`
+}
+
+type WorkerIdentity struct {
+	Hostname          string               `json:"hostname,omitempty"`
+	Timezone          string               `json:"timezone,omitempty"`
+	MachineID         string               `json:"machine_id,omitempty"`
+	Locale            WorkerIdentityLocale `json:"locale,omitempty"`
+	VNCResolution     string               `json:"vnc_resolution,omitempty"`
+	BrowserLanguage   string               `json:"browser_language,omitempty"`
+	BrowserWindowSize string               `json:"browser_window_size,omitempty"`
+}
+
+type WorkerIdentityLocale struct {
+	Lang     string `json:"LANG,omitempty"`
+	Language string `json:"LANGUAGE,omitempty"`
+	LCAll    string `json:"LC_ALL,omitempty"`
 }
 
 type HostMount struct {
@@ -297,6 +314,7 @@ type UpsertHostParams struct {
 	DiskLimitGB      int
 	HostMounts       HostMounts
 	HostPorts        HostPorts
+	WorkerIdentity   WorkerIdentity
 }
 
 type RecordEventParams struct {

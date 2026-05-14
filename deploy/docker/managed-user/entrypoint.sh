@@ -64,6 +64,15 @@ wait_for_x_display() {
   return 1
 }
 
+normalize_resolution() {
+  local value="${1:-1920x1080}"
+  if [[ "$value" =~ ^[0-9]{3,4}x[0-9]{3,4}$ ]]; then
+    echo "$value"
+    return
+  fi
+  echo "1920x1080"
+}
+
 # ===== v3.0 stages — D-09 / PITFALLS M4 串行快速失败 =====
 
 prepare_v3_dirs() {
@@ -99,10 +108,13 @@ prepare_persistent_state() {
 }
 
 prepare_container_disguise() {
-  # Per-container unique machine-id（基于 hostname + uptime，保证唯一性）
-  local h; h="$(hostname)"
-  local t; t="$(cat /proc/uptime 2>/dev/null | tr -d ' .')"
-  local mid; mid="$(echo -n "${h}-${t}" | sha256sum | cut -c1-32)"
+  local mid="${CLOUDPROXY_MACHINE_ID:-}"
+  if [[ -z "$mid" ]]; then
+    # Per-container unique machine-id（基于 hostname + uptime，保证唯一性）
+    local h; h="$(hostname)"
+    local t; t="$(cat /proc/uptime 2>/dev/null | tr -d ' .')"
+    mid="$(echo -n "${h}-${t}" | sha256sum | cut -c1-32)"
+  fi
   echo "$mid" > /etc/machine-id
   echo "$mid" > /var/lib/dbus/machine-id 2>/dev/null || true
   chmod 444 /etc/machine-id
@@ -229,7 +241,10 @@ MODE="${MODE:-remote}"
 if [ "$MODE" != "local" ]; then
 # KasmVNC 配置（无密码认证——由控制面反代保护）
 mkdir -p /workspace/.vnc
-cat > /workspace/.vnc/kasmvnc.yaml <<'YAML'
+VNC_RESOLUTION="$(normalize_resolution "${CLOUDPROXY_VNC_RESOLUTION:-1920x1080}")"
+VNC_WIDTH="${VNC_RESOLUTION%x*}"
+VNC_HEIGHT="${VNC_RESOLUTION#*x}"
+cat > /workspace/.vnc/kasmvnc.yaml <<YAML
 network:
   protocol: http
   websocket_port: 6080
@@ -242,8 +257,8 @@ network:
     stun_server:
 desktop:
   resolution:
-    width: 1920
-    height: 1080
+    width: ${VNC_WIDTH}
+    height: ${VNC_HEIGHT}
   allow_resize: true
   pixel_depth: 24
 keyboard:
@@ -285,7 +300,7 @@ rm -f /tmp/.X99-lock /tmp/.X11-unix/X99
 # 启动 KasmVNC（Xvnc 直接启动，跳过 vncserver perl 脚本的交互提示）
 export DISPLAY=:99
 su "${RUN_USER}" -c 'Xvnc :99 \
-  -geometry 1920x1080 \
+  -geometry '"${VNC_RESOLUTION}"' \
   -depth 24 \
   -websocketPort 6080 \
   -SecurityTypes None \

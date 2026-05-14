@@ -14,6 +14,10 @@ LOG_DIR=/workspace/.vnc
 XVNC_LOG="${LOG_DIR}/xvnc.log"
 FLUXBOX_LOG="${LOG_DIR}/fluxbox.log"
 DESKTOP_LOG="${LOG_DIR}/desktop.log"
+VNC_RESOLUTION="${CLOUDPROXY_VNC_RESOLUTION:-1920x1080}"
+if ! [[ "${VNC_RESOLUTION}" =~ ^[0-9]{3,4}x[0-9]{3,4}$ ]]; then
+  VNC_RESOLUTION="1920x1080"
+fi
 
 mkdir -p "${LOG_DIR}" /tmp/.X11-unix
 chmod 1777 /tmp/.X11-unix
@@ -26,7 +30,7 @@ pkill -u "${RUN_USER}" -f 'pcmanfm --desktop --profile default' || true
 
 export DISPLAY=:99
 su "${RUN_USER}" -c 'Xvnc :99 \
-  -geometry 1920x1080 \
+  -geometry '"${VNC_RESOLUTION}"' \
   -depth 24 \
   -websocketPort 6080 \
   -SecurityTypes None \

@@ -62,7 +62,7 @@ type QueueHostActionRepo interface {
 }
 
 type Service struct {
-	repo QueueHostActionRepo
+	repo       QueueHostActionRepo
 	dispatcher interface {
 		Dispatch(context.Context, agentapi.HostActionRequest) (agentapi.HostActionResponse, error)
 	}
@@ -167,10 +167,23 @@ func (s *Service) QueueHostAction(ctx context.Context, hostID string, action age
 			"cloud-cli-proxy.host_id":  host.ID,
 			"cloud-cli-proxy.slot_key": firstNonEmpty(host.SlotKey, defaultManagedUserSlotKey),
 		},
-		Timezone:      host.Timezone,
-		Hostname:      host.Hostname,
-		MemoryLimitMB: defaultIntIfZero(host.MemoryLimitMB, 4096),
-		CPULimit:      defaultFloatIfZero(host.CPULimit, 2.0),
+		Timezone: host.Timezone,
+		Hostname: host.Hostname,
+		WorkerIdentity: agentapi.WorkerIdentity{
+			Hostname:  host.WorkerIdentity.Hostname,
+			Timezone:  host.WorkerIdentity.Timezone,
+			MachineID: host.WorkerIdentity.MachineID,
+			Locale: agentapi.WorkerIdentityLocale{
+				Lang:     host.WorkerIdentity.Locale.Lang,
+				Language: host.WorkerIdentity.Locale.Language,
+				LCAll:    host.WorkerIdentity.Locale.LCAll,
+			},
+			VNCResolution:     host.WorkerIdentity.VNCResolution,
+			BrowserLanguage:   host.WorkerIdentity.BrowserLanguage,
+			BrowserWindowSize: host.WorkerIdentity.BrowserWindowSize,
+		},
+		MemoryLimitMB:   defaultIntIfZero(host.MemoryLimitMB, 4096),
+		CPULimit:        defaultFloatIfZero(host.CPULimit, 2.0),
 		Username:        owner.Username,
 		EntryPassword:   owner.EntryPassword,
 		SSHPublicKey:    "",
