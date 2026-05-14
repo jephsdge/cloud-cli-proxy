@@ -736,7 +736,7 @@ func (r *Repository) GetEgressIPByHost(ctx context.Context, hostID string) (Egre
 
 // getHostSQL 将 SQL 文本提升为包级常量，方便仓储层回归测试断言。
 const getHostSQL = `
-	SELECT id::text, user_id::text, status, COALESCE(short_id, ''), template_image_ref, home_volume_name, slot_key, timezone, hostname, memory_limit_mb, cpu_limit, disk_limit_gb, host_mounts, host_ports, gateway_config, created_at, updated_at
+	SELECT id::text, user_id::text, status, COALESCE(short_id, ''), template_image_ref, home_volume_name, slot_key, timezone, hostname, memory_limit_mb, cpu_limit, disk_limit_gb, host_mounts, host_ports, COALESCE(gateway_config_mode, 'auto'), gateway_config, created_at, updated_at
 	FROM hosts
 	WHERE id = $1
 `
@@ -761,6 +761,7 @@ func (r *Repository) GetHost(ctx context.Context, hostID string) (Host, error) {
 		&item.DiskLimitGB,
 		&rawMounts,
 		&rawPorts,
+		&item.GatewayConfigMode,
 		&rawGatewayConfig,
 		&item.CreatedAt,
 		&item.UpdatedAt,
@@ -773,8 +774,11 @@ func (r *Repository) GetHost(ctx context.Context, hostID string) (Host, error) {
 	if len(rawPorts) > 0 {
 		_ = json.Unmarshal(rawPorts, &item.HostPorts)
 	}
+	if item.GatewayConfigMode == "" {
+		item.GatewayConfigMode = GatewayConfigModeAuto
+	}
 	rawGatewayConfig = bytes.TrimSpace(rawGatewayConfig)
-	if len(rawGatewayConfig) > 0 && !bytes.Equal(rawGatewayConfig, []byte("null")) {
+	if item.GatewayConfigMode == GatewayConfigModeCustom && len(rawGatewayConfig) > 0 && !bytes.Equal(rawGatewayConfig, []byte("null")) {
 		item.GatewayConfig = rawGatewayConfig
 	}
 
@@ -1556,10 +1560,17 @@ func (r *Repository) UpdateHostPorts(ctx context.Context, hostID string, ports H
 	return err
 }
 
-func (r *Repository) UpdateHostGatewayConfig(ctx context.Context, hostID string, config json.RawMessage) error {
+func (r *Repository) UpdateHostGatewayConfig(ctx context.Context, hostID, mode string, config json.RawMessage) error {
+	if mode == "" {
+		mode = GatewayConfigModeAuto
+	}
+	if mode != GatewayConfigModeAuto && mode != GatewayConfigModeCustom {
+		return fmt.Errorf("invalid gateway config mode %q", mode)
+	}
+
 	config = bytes.TrimSpace(config)
-	if len(config) == 0 || bytes.Equal(config, []byte("null")) {
-		tag, err := r.db.Exec(ctx, `UPDATE hosts SET gateway_config = NULL, updated_at = NOW() WHERE id = $1`, hostID)
+	if mode == GatewayConfigModeAuto {
+		tag, err := r.db.Exec(ctx, `UPDATE hosts SET gateway_config_mode = $1, gateway_config = NULL, updated_at = NOW() WHERE id = $2`, GatewayConfigModeAuto, hostID)
 		if err != nil {
 			return fmt.Errorf("clear host gateway config: %w", err)
 		}
@@ -1568,8 +1579,11 @@ func (r *Repository) UpdateHostGatewayConfig(ctx context.Context, hostID string,
 		}
 		return nil
 	}
+	if len(config) == 0 || bytes.Equal(config, []byte("null")) {
+		return fmt.Errorf("custom gateway config is required")
+	}
 
-	tag, err := r.db.Exec(ctx, `UPDATE hosts SET gateway_config = $1, updated_at = NOW() WHERE id = $2`, config, hostID)
+	tag, err := r.db.Exec(ctx, `UPDATE hosts SET gateway_config_mode = $1, gateway_config = $2, updated_at = NOW() WHERE id = $3`, GatewayConfigModeCustom, config, hostID)
 	if err != nil {
 		return fmt.Errorf("update host gateway config: %w", err)
 	}
@@ -1581,8 +1595,12 @@ func (r *Repository) UpdateHostGatewayConfig(ctx context.Context, hostID string,
 
 func (r *Repository) GetHostGatewayConfig(ctx context.Context, hostID string) (json.RawMessage, error) {
 	var raw json.RawMessage
-	if err := r.db.QueryRow(ctx, `SELECT gateway_config FROM hosts WHERE id = $1`, hostID).Scan(&raw); err != nil {
+	var mode string
+	if err := r.db.QueryRow(ctx, `SELECT COALESCE(gateway_config_mode, 'auto'), gateway_config FROM hosts WHERE id = $1`, hostID).Scan(&mode, &raw); err != nil {
 		return nil, fmt.Errorf("get host gateway config: %w", err)
+	}
+	if mode != GatewayConfigModeCustom {
+		return nil, nil
 	}
 	raw = bytes.TrimSpace(raw)
 	if len(raw) == 0 || bytes.Equal(raw, []byte("null")) {

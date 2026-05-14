@@ -43,7 +43,7 @@ type AdminHostStore interface {
 	GetHostWithClaudeAccount(ctx context.Context, hostID string) (repository.HostWithClaudeAccount, error) // Phase 33 D-22
 	UpdateHostMounts(ctx context.Context, hostID string, mounts repository.HostMounts) error
 	UpdateHostPorts(ctx context.Context, hostID string, ports repository.HostPorts) error
-	UpdateHostGatewayConfig(ctx context.Context, hostID string, config json.RawMessage) error
+	UpdateHostGatewayConfig(ctx context.Context, hostID, mode string, config json.RawMessage) error
 }
 
 type AdminHostsHandler struct {
@@ -1115,6 +1115,7 @@ func (h *AdminHostsHandler) UpdatePorts() nethttp.Handler {
 
 type hostGatewayConfigResponse struct {
 	HostID          string          `json:"host_id"`
+	Mode            string          `json:"mode"`
 	GatewayConfig   json.RawMessage `json:"gateway_config"`
 	EffectiveConfig json.RawMessage `json:"effective_config"`
 	Source          string          `json:"source"`
@@ -1135,7 +1136,8 @@ func (h *AdminHostsHandler) GetGatewayConfig() nethttp.Handler {
 			return
 		}
 
-		effective, err := buildEffectiveGatewayConfig(detail, detail.Host.GatewayConfig)
+		mode := gatewayConfigModeOrDefault(detail.Host.GatewayConfigMode)
+		effective, err := buildEffectiveGatewayConfig(detail, mode, detail.Host.GatewayConfig)
 		if err != nil {
 			writeJSON(w, nethttp.StatusBadRequest, map[string]string{"error": err.Error()})
 			return
@@ -1143,9 +1145,10 @@ func (h *AdminHostsHandler) GetGatewayConfig() nethttp.Handler {
 
 		writeJSON(w, nethttp.StatusOK, hostGatewayConfigResponse{
 			HostID:          hostID,
+			Mode:            mode,
 			GatewayConfig:   nullableRaw(detail.Host.GatewayConfig),
 			EffectiveConfig: effective,
-			Source:          gatewayConfigSource(detail.Host.GatewayConfig),
+			Source:          gatewayConfigSource(mode),
 		})
 	})
 }
@@ -1154,6 +1157,7 @@ func (h *AdminHostsHandler) UpdateGatewayConfig() nethttp.Handler {
 	return nethttp.HandlerFunc(func(w nethttp.ResponseWriter, r *nethttp.Request) {
 		hostID := r.PathValue("hostID")
 		var body struct {
+			Mode          string          `json:"mode"`
 			GatewayConfig json.RawMessage `json:"gateway_config"`
 			Config        json.RawMessage `json:"config"`
 		}
@@ -1166,11 +1170,27 @@ func (h *AdminHostsHandler) UpdateGatewayConfig() nethttp.Handler {
 		if len(raw) == 0 {
 			raw = body.Config
 		}
-		if len(raw) == 0 {
-			writeJSON(w, nethttp.StatusBadRequest, map[string]string{"error": "gateway_config is required; use null to clear override"})
+
+		mode, err := normalizeGatewayConfigMode(body.Mode)
+		if err != nil {
+			writeJSON(w, nethttp.StatusBadRequest, map[string]string{"error": err.Error()})
 			return
 		}
-		if string(raw) != "null" && !json.Valid(raw) {
+		if body.Mode == "" {
+			if gatewayConfigRawEmpty(raw) {
+				mode = repository.GatewayConfigModeAuto
+			} else {
+				mode = repository.GatewayConfigModeCustom
+			}
+		}
+		raw = bytes.TrimSpace(raw)
+		if mode == repository.GatewayConfigModeAuto {
+			raw = nil
+		} else if gatewayConfigRawEmpty(raw) {
+			writeJSON(w, nethttp.StatusBadRequest, map[string]string{"error": "custom gateway_config is required"})
+			return
+		}
+		if !gatewayConfigRawEmpty(raw) && !json.Valid(raw) {
 			writeJSON(w, nethttp.StatusBadRequest, map[string]string{"error": "gateway_config must be valid JSON"})
 			return
 		}
@@ -1186,7 +1206,7 @@ func (h *AdminHostsHandler) UpdateGatewayConfig() nethttp.Handler {
 			return
 		}
 
-		effective, err := buildEffectiveGatewayConfig(detail, raw)
+		effective, err := buildEffectiveGatewayConfig(detail, mode, raw)
 		if err != nil {
 			writeJSON(w, nethttp.StatusBadRequest, map[string]string{"error": err.Error()})
 			return
@@ -1202,9 +1222,10 @@ func (h *AdminHostsHandler) UpdateGatewayConfig() nethttp.Handler {
 			applied = true
 		}
 
-		if err := h.store.UpdateHostGatewayConfig(r.Context(), hostID, raw); err != nil {
+		if err := h.store.UpdateHostGatewayConfig(r.Context(), hostID, mode, raw); err != nil {
 			if applied {
-				if previous, buildErr := buildEffectiveGatewayConfig(detail, detail.Host.GatewayConfig); buildErr == nil {
+				previousMode := gatewayConfigModeOrDefault(detail.Host.GatewayConfigMode)
+				if previous, buildErr := buildEffectiveGatewayConfig(detail, previousMode, detail.Host.GatewayConfig); buildErr == nil {
 					if rollbackErr := applyRunningGatewayConfig(context.Background(), hostID, previous); rollbackErr != nil {
 						h.logger.Error("rollback running gateway config after db failure failed", "host_id", hostID, "error", rollbackErr)
 					}
@@ -1224,7 +1245,7 @@ func (h *AdminHostsHandler) UpdateGatewayConfig() nethttp.Handler {
 			if _, err := h.events.RecordEvent(r.Context(), repository.RecordEventParams{
 				HostID: &hid, Level: "info", Type: "admin.host.gateway_config_updated",
 				Message:  "管理员更新主机 gateway sing-box 配置",
-				Metadata: map[string]any{"operator": "admin", "source": gatewayConfigSource(raw), "applied": applied},
+				Metadata: map[string]any{"operator": "admin", "mode": mode, "source": gatewayConfigSource(mode), "applied": applied},
 			}); err != nil {
 				h.logger.Error("record event failed", "type", "admin.host.gateway_config_updated", "error", err)
 			}
@@ -1232,15 +1253,28 @@ func (h *AdminHostsHandler) UpdateGatewayConfig() nethttp.Handler {
 
 		writeJSON(w, nethttp.StatusOK, hostGatewayConfigResponse{
 			HostID:          hostID,
+			Mode:            mode,
 			GatewayConfig:   nullableRaw(raw),
 			EffectiveConfig: effective,
-			Source:          gatewayConfigSource(raw),
+			Source:          gatewayConfigSource(mode),
 			Applied:         applied,
 		})
 	})
 }
 
-func buildEffectiveGatewayConfig(detail repository.HostDetail, gatewayConfig json.RawMessage) (json.RawMessage, error) {
+func buildEffectiveGatewayConfig(detail repository.HostDetail, mode string, gatewayConfig json.RawMessage) (json.RawMessage, error) {
+	mode = gatewayConfigModeOrDefault(mode)
+	if mode == repository.GatewayConfigModeCustom {
+		if gatewayConfigRawEmpty(gatewayConfig) {
+			return nil, fmt.Errorf("custom gateway_config is required")
+		}
+		cfg, err := network.BuildGatewayCustomSingBoxConfig(gatewayConfig)
+		if err != nil {
+			return nil, err
+		}
+		return json.RawMessage(cfg), nil
+	}
+
 	if len(detail.Bindings) == 0 {
 		return nil, fmt.Errorf("host has no egress binding")
 	}
@@ -1250,11 +1284,11 @@ func buildEffectiveGatewayConfig(detail repository.HostDetail, gatewayConfig jso
 	}
 
 	dnsServer := gatewayDNSServer(proxyRaw)
-	serverIP, err := network.ResolveGatewayProxyServerIP(proxyRaw, gatewayConfig)
+	serverIP, err := network.ResolveGatewayProxyServerIP(proxyRaw, nil)
 	if err != nil {
 		return nil, fmt.Errorf("resolve gateway proxy server: %w", err)
 	}
-	cfg, err := network.BuildGatewaySingBoxConfig(proxyRaw, gatewayConfig, dnsServer, serverIP)
+	cfg, err := network.BuildGatewaySingBoxConfig(proxyRaw, nil, dnsServer, serverIP)
 	if err != nil {
 		return nil, err
 	}
@@ -1270,25 +1304,35 @@ func gatewayDNSServer(raw json.RawMessage) string {
 	return dnsServer
 }
 
-func gatewayConfigSource(raw json.RawMessage) string {
-	raw = bytes.TrimSpace(raw)
-	if len(raw) == 0 || bytes.Equal(raw, []byte("null")) {
+func gatewayConfigSource(mode string) string {
+	if gatewayConfigModeOrDefault(mode) == repository.GatewayConfigModeAuto {
 		return "egress_binding"
 	}
-	var parsed map[string]any
-	if err := json.Unmarshal(raw, &parsed); err != nil {
-		return "host_override"
+	return "host_custom_config"
+}
+
+func normalizeGatewayConfigMode(mode string) (string, error) {
+	switch strings.TrimSpace(mode) {
+	case "", repository.GatewayConfigModeAuto:
+		return repository.GatewayConfigModeAuto, nil
+	case repository.GatewayConfigModeCustom:
+		return repository.GatewayConfigModeCustom, nil
+	default:
+		return "", fmt.Errorf("invalid gateway config mode %q", mode)
 	}
-	if _, ok := parsed["inbounds"]; ok {
-		return "host_full_config"
+}
+
+func gatewayConfigModeOrDefault(mode string) string {
+	normalized, err := normalizeGatewayConfigMode(mode)
+	if err != nil {
+		return repository.GatewayConfigModeAuto
 	}
-	if _, ok := parsed["outbounds"]; ok {
-		return "host_full_config"
-	}
-	if _, ok := parsed["route"]; ok {
-		return "host_full_config"
-	}
-	return "host_outbound_override"
+	return normalized
+}
+
+func gatewayConfigRawEmpty(raw json.RawMessage) bool {
+	raw = bytes.TrimSpace(raw)
+	return len(raw) == 0 || bytes.Equal(raw, []byte("null"))
 }
 
 func nullableRaw(raw json.RawMessage) json.RawMessage {

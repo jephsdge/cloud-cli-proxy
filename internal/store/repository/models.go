@@ -15,6 +15,11 @@ const (
 	TaskStatusCanceled  TaskStatus = "canceled"
 )
 
+const (
+	GatewayConfigModeAuto   = "auto"
+	GatewayConfigModeCustom = "custom"
+)
+
 type User struct {
 	ID            string     `json:"id"`
 	Username      string     `json:"username"`
@@ -32,23 +37,24 @@ type User struct {
 }
 
 type Host struct {
-	ID               string          `json:"id"`
-	UserID           string          `json:"user_id"`
-	Status           string          `json:"status"`
-	ShortID          string          `json:"short_id"`
-	TemplateImageRef string          `json:"template_image_ref"`
-	HomeVolumeName   string          `json:"home_volume_name"`
-	SlotKey          string          `json:"slot_key"`
-	Timezone         string          `json:"timezone"`
-	Hostname         string          `json:"hostname"`
-	MemoryLimitMB    int             `json:"memory_limit_mb"`
-	CPULimit         float64         `json:"cpu_limit"`
-	DiskLimitGB      int             `json:"disk_limit_gb"`
-	HostMounts       HostMounts      `json:"host_mounts"`
-	HostPorts        HostPorts       `json:"host_ports"`
-	GatewayConfig    json.RawMessage `json:"gateway_config,omitempty"`
-	CreatedAt        time.Time       `json:"created_at"`
-	UpdatedAt        time.Time       `json:"updated_at"`
+	ID                string          `json:"id"`
+	UserID            string          `json:"user_id"`
+	Status            string          `json:"status"`
+	ShortID           string          `json:"short_id"`
+	TemplateImageRef  string          `json:"template_image_ref"`
+	HomeVolumeName    string          `json:"home_volume_name"`
+	SlotKey           string          `json:"slot_key"`
+	Timezone          string          `json:"timezone"`
+	Hostname          string          `json:"hostname"`
+	MemoryLimitMB     int             `json:"memory_limit_mb"`
+	CPULimit          float64         `json:"cpu_limit"`
+	DiskLimitGB       int             `json:"disk_limit_gb"`
+	HostMounts        HostMounts      `json:"host_mounts"`
+	HostPorts         HostPorts       `json:"host_ports"`
+	GatewayConfigMode string          `json:"gateway_config_mode,omitempty"`
+	GatewayConfig     json.RawMessage `json:"gateway_config,omitempty"`
+	CreatedAt         time.Time       `json:"created_at"`
+	UpdatedAt         time.Time       `json:"updated_at"`
 }
 
 type HostMount struct {

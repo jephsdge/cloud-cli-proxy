@@ -55,6 +55,8 @@ export interface HostPort {
   protocol?: string;
 }
 
+export type GatewayConfigMode = "auto" | "custom";
+
 export interface HostDetail {
   host: {
     id: string;
@@ -68,6 +70,7 @@ export interface HostDetail {
     hostname: string;
     host_mounts?: HostMount[];
     host_ports?: HostPort[];
+    gateway_config_mode?: GatewayConfigMode;
     gateway_config?: Record<string, unknown> | null;
     created_at: string;
     updated_at: string;
@@ -166,6 +169,7 @@ export function useUpdateHostPorts(hostId: string) {
 
 export interface HostGatewayConfigResponse {
   host_id: string;
+  mode: GatewayConfigMode;
   gateway_config: Record<string, unknown> | null;
   effective_config: Record<string, unknown>;
   source: string;
@@ -184,10 +188,13 @@ export function useHostGatewayConfig(hostId: string, enabled = true) {
 export function useUpdateHostGatewayConfig(hostId: string) {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (gatewayConfig: Record<string, unknown> | null) =>
+    mutationFn: (payload: {
+      mode: GatewayConfigMode;
+      gateway_config: Record<string, unknown> | null;
+    }) =>
       apiFetch<HostGatewayConfigResponse>(`/hosts/${hostId}/gateway/config`, {
         method: "PUT",
-        body: JSON.stringify({ gateway_config: gatewayConfig }),
+        body: JSON.stringify(payload),
       }),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["hosts", hostId] });

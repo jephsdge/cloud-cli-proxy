@@ -77,7 +77,7 @@ func (s *stubHostStore) UpdateHostPorts(_ context.Context, _ string, _ repositor
 	return nil
 }
 
-func (s *stubHostStore) UpdateHostGatewayConfig(_ context.Context, _ string, _ json.RawMessage) error {
+func (s *stubHostStore) UpdateHostGatewayConfig(_ context.Context, _, _ string, _ json.RawMessage) error {
 	return nil
 }
 
@@ -242,7 +242,7 @@ func TestAdminHostsHandler(t *testing.T) {
 	}
 }
 
-func TestBuildEffectiveGatewayConfig_HostOutboundOverride(t *testing.T) {
+func TestBuildEffectiveGatewayConfig_AutoIgnoresHostGatewayConfig(t *testing.T) {
 	detail := repository.HostDetail{
 		Host: repository.Host{ID: "h1"},
 		Bindings: []repository.BindingWithIP{{
@@ -252,7 +252,7 @@ func TestBuildEffectiveGatewayConfig_HostOutboundOverride(t *testing.T) {
 		}},
 	}
 
-	effective, err := buildEffectiveGatewayConfig(detail, json.RawMessage(`{"type":"trojan","server":"5.6.7.8","server_port":443,"password":"secret","dns_server":"9.9.9.9"}`))
+	effective, err := buildEffectiveGatewayConfig(detail, repository.GatewayConfigModeAuto, json.RawMessage(`{"type":"trojan","server":"5.6.7.8","server_port":443,"password":"secret","dns_server":"9.9.9.9"}`))
 	if err != nil {
 		t.Fatalf("build effective config: %v", err)
 	}
@@ -269,8 +269,8 @@ func TestBuildEffectiveGatewayConfig_HostOutboundOverride(t *testing.T) {
 
 	outbounds := cfg["outbounds"].([]any)
 	first := outbounds[0].(map[string]any)
-	if got := first["type"]; got != "trojan" {
-		t.Fatalf("first outbound type=%v, want trojan", got)
+	if got := first["type"]; got != "socks" {
+		t.Fatalf("first outbound type=%v, want socks", got)
 	}
 	if got := first["tag"]; got != "proxy-out" {
 		t.Fatalf("first outbound tag=%v, want proxy-out", got)
@@ -278,8 +278,8 @@ func TestBuildEffectiveGatewayConfig_HostOutboundOverride(t *testing.T) {
 
 	dns := cfg["dns"].(map[string]any)
 	servers := dns["servers"].([]any)
-	if got := servers[0].(map[string]any)["server"]; got != "9.9.9.9" {
-		t.Fatalf("dns server=%v, want 9.9.9.9", got)
+	if got := servers[0].(map[string]any)["server"]; got != "1.1.1.1" {
+		t.Fatalf("dns server=%v, want 1.1.1.1", got)
 	}
 }
 
@@ -298,7 +298,7 @@ func TestBuildEffectiveGatewayConfig_FullConfigPreservesCustomFinal(t *testing.T
 		"outbounds": [{"type":"socks","tag":"custom-out","server":"5.6.7.8","server_port":1080}],
 		"route": {"final":"custom-out","rules":[]}
 	}`)
-	effective, err := buildEffectiveGatewayConfig(detail, full)
+	effective, err := buildEffectiveGatewayConfig(detail, repository.GatewayConfigModeCustom, full)
 	if err != nil {
 		t.Fatalf("build effective config: %v", err)
 	}

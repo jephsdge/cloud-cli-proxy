@@ -128,21 +128,56 @@ func TestBuildGatewaySingBoxConfig_FullConfigDoesNotRequireProxyOut(t *testing.T
 	if got := route["final"]; got != "custom-out" {
 		t.Fatalf("route.final = %v, want custom-out", got)
 	}
-	if got := route["auto_detect_interface"]; got != true {
-		t.Fatalf("auto_detect_interface = %v, want true", got)
-	}
-
 	outbounds := parsed["outbounds"].([]any)
-	if len(outbounds) != 2 {
-		t.Fatalf("outbounds length = %d, want custom-out + injected direct", len(outbounds))
+	if len(outbounds) != 1 {
+		t.Fatalf("outbounds length = %d, want exactly the custom outbound", len(outbounds))
 	}
-	if hasProxyOut := hasOutboundTag(outbounds, "proxy-out"); hasProxyOut {
-		t.Fatal("full custom config should not inject proxy-out")
+	if got := outbounds[0].(map[string]any)["tag"]; got != "custom-out" {
+		t.Fatalf("outbound tag = %v, want custom-out", got)
 	}
 
 	rules := route["rules"].([]any)
-	if len(rules) < 2 {
-		t.Fatalf("expected injected safety rules, got %v", rules)
+	if len(rules) != 0 {
+		t.Fatalf("rules length = %d, want exactly user rules", len(rules))
+	}
+}
+
+func TestBuildGatewaySingBoxConfig_FullConfigDoesNotInjectChainRoutes(t *testing.T) {
+	base := json.RawMessage(`{"type":"socks","server":"1.2.3.4","server_port":1080}`)
+	full := json.RawMessage(`{
+		"inbounds": [{"type": "tun", "tag": "tun-in", "address": ["172.19.0.1/30"], "auto_route": true}],
+		"outbounds": [
+			{"type":"shadowsocks","tag":"ss-hk","server":"45.194.21.204","server_port":49996,"method":"aes-256-gcm","password":"secret"},
+			{"type":"socks","tag":"socks-us-residential","server":"149.119.167.148","server_port":443,"version":"5","detour":"ss-hk"}
+		],
+		"route": {"final":"socks-us-residential","rules":[{"port":53,"action":"hijack-dns"}]}
+	}`)
+	cfg, err := BuildGatewaySingBoxConfig(base, full, "1.1.1.1", "")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	var parsed map[string]any
+	if err := json.Unmarshal(cfg, &parsed); err != nil {
+		t.Fatalf("output is not valid JSON: %v", err)
+	}
+
+	route := parsed["route"].(map[string]any)
+	rules := route["rules"].([]any)
+	if len(rules) != 1 {
+		t.Fatalf("rules length = %d, want no injected rules", len(rules))
+	}
+	if got := rules[0].(map[string]any)["action"]; got != "hijack-dns" {
+		t.Fatalf("first rule action = %v, want hijack-dns", got)
+	}
+	outbounds := parsed["outbounds"].([]any)
+	if len(outbounds) != 2 {
+		t.Fatalf("outbounds length = %d, want exactly user outbounds", len(outbounds))
+	}
+	for _, item := range outbounds {
+		if item.(map[string]any)["tag"] == "proxy-out" {
+			t.Fatal("full custom config should not inject proxy-out")
+		}
 	}
 }
 
