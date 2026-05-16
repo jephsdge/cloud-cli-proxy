@@ -2,6 +2,7 @@ package network
 
 import (
 	"os"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -120,6 +121,77 @@ func TestGatewayImage_Default(t *testing.T) {
 	}
 }
 
+func TestGatewayNetworkMTU_Default(t *testing.T) {
+	t.Setenv(gatewayNetworkMTUEnv, "")
+
+	got, err := gatewayNetworkMTU()
+	if err != nil {
+		t.Fatalf("gatewayNetworkMTU returned error: %v", err)
+	}
+	if got != 0 {
+		t.Errorf("gatewayNetworkMTU = %d, want 0", got)
+	}
+}
+
+func TestGatewayNetworkMTU_Custom(t *testing.T) {
+	t.Setenv(gatewayNetworkMTUEnv, "1400")
+
+	got, err := gatewayNetworkMTU()
+	if err != nil {
+		t.Fatalf("gatewayNetworkMTU returned error: %v", err)
+	}
+	if got != 1400 {
+		t.Errorf("gatewayNetworkMTU = %d, want 1400", got)
+	}
+}
+
+func TestGatewayNetworkMTU_Invalid(t *testing.T) {
+	t.Setenv(gatewayNetworkMTUEnv, "abc")
+
+	if _, err := gatewayNetworkMTU(); err == nil {
+		t.Fatal("gatewayNetworkMTU expected error for invalid value")
+	}
+}
+
+func TestDockerNetworkCreateArgs_WithMTU(t *testing.T) {
+	got := dockerNetworkCreateArgs("cloudproxy-net-host", "10.99.20.0/24", "10.99.20.1", 1400)
+	want := []string{
+		"network",
+		"create",
+		"--driver", "bridge",
+		"--opt", "com.docker.network.driver.mtu=1400",
+		"--subnet", "10.99.20.0/24",
+		"--gateway", "10.99.20.1",
+		"cloudproxy-net-host",
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("dockerNetworkCreateArgs = %#v, want %#v", got, want)
+	}
+}
+
+func TestDockerNetworkCreateArgs_DefaultMTU(t *testing.T) {
+	got := dockerNetworkCreateArgs("cloudproxy-net-host", "10.99.20.0/24", "10.99.20.1", 0)
+	for i := 0; i < len(got)-1; i++ {
+		if got[i] == "--opt" && strings.Contains(got[i+1], "mtu") {
+			t.Fatalf("dockerNetworkCreateArgs must not set MTU when value is 0: %#v", got)
+		}
+	}
+}
+
+func TestDockerEgressNetworkCreateArgs_WithMTU(t *testing.T) {
+	got := dockerEgressNetworkCreateArgs("cloudproxy-egress-host", 1400)
+	want := []string{
+		"network",
+		"create",
+		"--driver", "bridge",
+		"--opt", "com.docker.network.driver.mtu=1400",
+		"cloudproxy-egress-host",
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("dockerEgressNetworkCreateArgs = %#v, want %#v", got, want)
+	}
+}
+
 func TestNewContainerProxyProvider(t *testing.T) {
 	p := NewContainerProxyProvider(nil)
 	if p == nil {
@@ -130,21 +202,25 @@ func TestNewContainerProxyProvider(t *testing.T) {
 	}
 }
 
-func TestPrepareHost_ConnectsGatewayBridgeBeforeStart(t *testing.T) {
+func TestPrepareHost_ConnectsGatewayNetworksBeforeStart(t *testing.T) {
 	source, err := os.ReadFile("container_proxy_provider.go")
 	if err != nil {
 		t.Fatalf("read provider source: %v", err)
 	}
 
 	body := string(source)
-	createIdx := strings.Index(body, "dockerCreateGateway(ctx")
-	connectIdx := strings.Index(body, `dockerNetworkConnect(ctx, "bridge", gwName, "")`)
+	createEgressIdx := strings.Index(body, "dockerEgressNetworkCreate(ctx, egressNetName, networkMTU)")
+	createGatewayIdx := strings.Index(body, "dockerCreateGateway(ctx, gwName, egressNetName")
+	connectIsolatedIdx := strings.Index(body, "dockerNetworkConnect(ctx, netName, gwName, gwIP)")
 	startIdx := strings.Index(body, "dockerStartGateway(ctx")
-	if createIdx < 0 || connectIdx < 0 || startIdx < 0 {
-		t.Fatalf("expected create/connect/start calls to exist, got create=%d connect=%d start=%d", createIdx, connectIdx, startIdx)
+	if createEgressIdx < 0 || createGatewayIdx < 0 || connectIsolatedIdx < 0 || startIdx < 0 {
+		t.Fatalf("expected create/connect/start calls to exist, got egress=%d create=%d connect=%d start=%d", createEgressIdx, createGatewayIdx, connectIsolatedIdx, startIdx)
 	}
-	if !(createIdx < connectIdx && connectIdx < startIdx) {
-		t.Fatalf("gateway call order must be create -> connect bridge -> start, got create=%d connect=%d start=%d", createIdx, connectIdx, startIdx)
+	if !(createEgressIdx < createGatewayIdx && createGatewayIdx < connectIsolatedIdx && connectIsolatedIdx < startIdx) {
+		t.Fatalf("gateway call order must be egress network -> create gateway -> connect isolated network -> start, got egress=%d create=%d connect=%d start=%d", createEgressIdx, createGatewayIdx, connectIsolatedIdx, startIdx)
+	}
+	if strings.Contains(body, `dockerNetworkConnect(ctx, "bridge", gwName, "")`) {
+		t.Fatal("gateway must not use Docker default bridge as its managed egress network")
 	}
 }
 

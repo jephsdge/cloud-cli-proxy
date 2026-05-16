@@ -8,7 +8,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         iproute2 ca-certificates curl \
     && rm -rf /var/lib/apt/lists/*
 
-ARG SINGBOX_VERSION=1.13.3
+ARG SINGBOX_VERSION=1.13.11
 RUN set -eux; \
 	ARCH="$(dpkg --print-architecture)"; \
 	curl -fsSL -o /tmp/sb.tgz "https://github.com/SagerNet/sing-box/releases/download/v${SINGBOX_VERSION}/sing-box-${SINGBOX_VERSION}-linux-${ARCH}.tar.gz"; \

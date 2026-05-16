@@ -151,6 +151,9 @@ ADMIN_JWT_SECRET=${ADMIN_JWT_SECRET}
 # Logging
 LOG_FORMAT=json
 LOG_LEVEL=info
+
+# Optional: set to 1400 when managed Docker bridge networks leave through GRE/VXLAN or another lower-MTU path.
+CLOUD_CLI_PROXY_NETWORK_MTU=
 EOF
 } > "$ENV_FILE"
 

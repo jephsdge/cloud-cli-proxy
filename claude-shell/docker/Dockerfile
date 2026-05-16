@@ -13,7 +13,7 @@ RUN apt-get update \
 # ---------------------------------------------------------------------------
 # 2. sing-box 二进制安装（D-03，复用 sing-box-gateway 模式）
 # ---------------------------------------------------------------------------
-ARG SINGBOX_VERSION=1.13.3
+ARG SINGBOX_VERSION=1.13.11
 RUN set -eux; \
     ARCH="$(dpkg --print-architecture)"; \
     curl -fsSL -o /tmp/sb.tgz \

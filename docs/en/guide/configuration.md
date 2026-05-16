@@ -22,6 +22,7 @@ bash deploy/scripts/setup-env.sh
 | `HOST_AGENT_MODE` | No | `socket` | Host-agent mode. `socket` = connect to standalone process via Unix socket, `embedded` = run inside control plane process |
 | `HOST_AGENT_SOCKET` | No | `/run/cloud-cli-proxy/host-agent.sock` | Host-agent Unix socket path (socket mode only) |
 | `DATA_DIR` | No | `/var/lib/cloud-cli-proxy` | Data directory for runtime files |
+| `CLOUD_CLI_PROXY_NETWORK_MTU` | No | empty | Sets the MTU for newly created managed Docker bridge networks (`cloudproxy-net-*` and `cloudproxy-egress-*`), e.g. `1400` for GRE/VXLAN environments |
 | `SSH_PROXY_ADDR` | No | `:2222` | SSH proxy listen address |
 | `LOG_FORMAT` | No | `json` | Log format, `json` or `text` |
 | `LOG_LEVEL` | No | `info` | Log level: `debug` / `info` / `warn` / `error` |
@@ -187,6 +188,6 @@ The managed user image is based on Ubuntu 24.04 with:
 | KasmVNC | 1.4.0 | Remote desktop server |
 | Chromium | Latest | Browser (with KasmVNC) |
 | Fluxbox | — | Lightweight window manager |
-| sing-box | 1.13.3 | Proxy mode tunnel client |
+| sing-box | 1.13.11 | Proxy mode tunnel client |
 | Git, tmux, zsh | — | Common dev tools |
 | Node.js | LTS | JavaScript runtime |

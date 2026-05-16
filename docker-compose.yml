@@ -34,6 +34,7 @@ services:
       DATA_DIR: ${CLOUD_CLI_PROXY_DATA_DIR:-${PWD}/runtime-data}
       CLOUD_CLI_PROXY_SKIP_IMAGE_PULL: ${CLOUD_CLI_PROXY_SKIP_IMAGE_PULL:-false}
       CLOUD_CLI_PROXY_GATEWAY_IMAGE: ghcr.io/zanel1u/cloud-cli-proxy/sing-box-gateway:latest
+      CLOUD_CLI_PROXY_NETWORK_MTU: ${CLOUD_CLI_PROXY_NETWORK_MTU:-}
     ports:
       - "${SSH_PROXY_PORT:-2222}:2222"
     privileged: true
@@ -74,7 +75,7 @@ services:
     command: ["true"]
 
   sing-box:
-    image: ghcr.io/sagernet/sing-box:v1.13.3
+    image: ghcr.io/sagernet/sing-box:v1.13.11
     pull_policy: always
     restart: "no"
     command: ["true"]

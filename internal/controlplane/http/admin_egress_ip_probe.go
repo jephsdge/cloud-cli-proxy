@@ -22,9 +22,9 @@ import (
 	"golang.org/x/net/proxy"
 )
 
-// probeImage 固定 sing-box 版本，与项目自建 gateway 镜像保持一致（v1.13.3），
+// probeImage 固定 sing-box 版本，与项目自建 gateway 镜像保持一致（v1.13.11），
 // 避免 latest 版本配置格式不兼容导致探针失败。
-const probeImage = "ghcr.io/sagernet/sing-box:v1.13.3"
+const probeImage = "ghcr.io/sagernet/sing-box:v1.13.11"
 
 type ProbeResult struct {
 	Status   string    `json:"status"`
@@ -73,8 +73,8 @@ const (
 )
 
 type ProbeStreamEvent struct {
-	Stage   ProbeStage  `json:"stage"`
-	Message string      `json:"message"`
+	Stage   ProbeStage   `json:"stage"`
+	Message string       `json:"message"`
 	Result  *ProbeResult `json:"result,omitempty"`
 }
 

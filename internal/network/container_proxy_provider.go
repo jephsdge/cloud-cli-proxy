@@ -9,11 +9,13 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"time"
 )
 
 const gatewayTPProxyPort = 7892
+const gatewayNetworkMTUEnv = "CLOUD_CLI_PROXY_NETWORK_MTU"
 
 // ContainerProxyProvider wires each worker container to a sidecar gateway that
 // runs sing-box (tproxy + iptables). The worker image stays proxy-unaware.
@@ -39,6 +41,7 @@ func (p *ContainerProxyProvider) PrepareHost(ctx context.Context, spec HostNetwo
 	hostID := spec.HostID
 	workerName := workerContainerName(hostID)
 	netName := networkName(hostID)
+	egressNetName := egressNetworkName(hostID)
 	gwName := gatewayContainerName(hostID)
 
 	third := subnetThirdOctet(hostID)
@@ -46,6 +49,11 @@ func (p *ContainerProxyProvider) PrepareHost(ctx context.Context, spec HostNetwo
 	bridgeGW := fmt.Sprintf("10.99.%d.1", third)
 	gwIP := fmt.Sprintf("10.99.%d.2", third)
 	workerIP := fmt.Sprintf("10.99.%d.3", third)
+
+	networkMTU, err := gatewayNetworkMTU()
+	if err != nil {
+		return fmt.Errorf("gateway: invalid network MTU: %w", err)
+	}
 
 	proxyRaw := spec.Egress.Proxy.OutboundConfig
 	serverIP, err := ResolveGatewayProxyServerIP(proxyRaw, spec.Egress.GatewayConfig)
@@ -72,24 +80,26 @@ func (p *ContainerProxyProvider) PrepareHost(ctx context.Context, spec HostNetwo
 		return fmt.Errorf("gateway: write config: %w", err)
 	}
 
-	if err := dockerNetworkCreate(ctx, netName, subnet, bridgeGW); err != nil {
+	if err := dockerNetworkCreate(ctx, netName, subnet, bridgeGW, networkMTU); err != nil {
 		return fmt.Errorf("gateway: create network: %w", err)
+	}
+	if err := dockerEgressNetworkCreate(ctx, egressNetName, networkMTU); err != nil {
+		p.teardownGateway(ctx, hostID)
+		return fmt.Errorf("gateway: create egress network: %w", err)
 	}
 
 	img := GatewayImage()
-	if err := dockerCreateGateway(ctx, gwName, netName, gwIP, serverIP, configPath, img); err != nil {
+	if err := dockerCreateGateway(ctx, gwName, egressNetName, configPath, img); err != nil {
 		p.teardownGateway(ctx, hostID)
 		return fmt.Errorf("gateway: create gateway container: %w", err)
 	}
 
-	// 网关也需要 bridge 网络才能访问互联网（连上游代理服务器）
-	// Docker 会按连接顺序命名网卡；不要依赖 eth0/eth1 的固定含义。
-	// sing-box 通过 auto_detect_interface 找出默认出站接口，隔离网络接口只负责接收 worker 流量。
-	// 必须在 start 前连接 bridge：sing-box auto_route 启动后会改容器路由，
-	// 再接 bridge 时 Docker 可能找不到到 172.17.0.1 的直连路由。
-	if err := dockerNetworkConnect(ctx, "bridge", gwName, ""); err != nil {
+	// Gateway uses the egress network as its default route and the isolated
+	// network only to receive worker traffic. Keep both attached before start:
+	// sing-box auto_route rewrites routes after startup.
+	if err := dockerNetworkConnect(ctx, netName, gwName, gwIP); err != nil {
 		p.teardownGateway(ctx, hostID)
-		return fmt.Errorf("gateway: connect gateway to bridge: %w", err)
+		return fmt.Errorf("gateway: connect gateway to isolated network: %w", err)
 	}
 
 	if err := dockerStartGateway(ctx, gwName); err != nil {
@@ -151,10 +161,12 @@ func (p *ContainerProxyProvider) PrepareHost(ctx context.Context, spec HostNetwo
 	p.logger.Info("container-proxy: sidecar gateway ready",
 		"host_id", hostID,
 		"network", netName,
+		"egress_network", egressNetName,
 		"gateway", gwName,
 		"gateway_ip", gwIP,
 		"worker_ip", workerIP,
 		"image", img,
+		"network_mtu", networkMTU,
 		"tproxy_port", gatewayTPProxyPort,
 	)
 	return nil
@@ -167,6 +179,7 @@ func (p *ContainerProxyProvider) CleanupHost(ctx context.Context, spec HostNetwo
 
 func (p *ContainerProxyProvider) teardownGateway(ctx context.Context, hostID string) {
 	netName := networkName(hostID)
+	egressNetName := egressNetworkName(hostID)
 	gwName := gatewayContainerName(hostID)
 	workerName := workerContainerName(hostID)
 
@@ -178,6 +191,7 @@ func (p *ContainerProxyProvider) teardownGateway(ctx context.Context, hostID str
 	}
 	_ = exec.CommandContext(ctx, "docker", "network", "disconnect", "-f", netName, workerName).Run()
 	_ = exec.CommandContext(ctx, "docker", "rm", "-f", gwName).Run()
+	_ = exec.CommandContext(ctx, "docker", "network", "rm", egressNetName).Run()
 	_ = exec.CommandContext(ctx, "docker", "network", "rm", netName).Run()
 	_ = os.RemoveAll(GatewayConfigDir(hostID))
 }
@@ -209,6 +223,10 @@ func networkName(hostID string) string {
 	return "cloudproxy-net-" + hostID
 }
 
+func egressNetworkName(hostID string) string {
+	return "cloudproxy-egress-" + hostID
+}
+
 func gatewayContainerName(hostID string) string {
 	return "cloudproxy-gw-" + hostID
 }
@@ -223,13 +241,40 @@ func subnetThirdOctet(hostID string) int {
 	return int(h.Sum32()%200) + 20
 }
 
-func dockerNetworkCreate(ctx context.Context, name, subnet, gateway string) error {
-	cmd := exec.CommandContext(ctx, "docker", "network", "create",
+func gatewayNetworkMTU() (int, error) {
+	raw := strings.TrimSpace(os.Getenv(gatewayNetworkMTUEnv))
+	if raw == "" {
+		return 0, nil
+	}
+	mtu, err := strconv.Atoi(raw)
+	if err != nil {
+		return 0, fmt.Errorf("%s must be an integer: %w", gatewayNetworkMTUEnv, err)
+	}
+	if mtu <= 0 {
+		return 0, fmt.Errorf("%s must be greater than 0", gatewayNetworkMTUEnv)
+	}
+	return mtu, nil
+}
+
+func dockerNetworkCreateArgs(name, subnet, gateway string, mtu int) []string {
+	args := []string{
+		"network",
+		"create",
 		"--driver", "bridge",
+	}
+	if mtu > 0 {
+		args = append(args, "--opt", fmt.Sprintf("com.docker.network.driver.mtu=%d", mtu))
+	}
+	args = append(args,
 		"--subnet", subnet,
 		"--gateway", gateway,
 		name,
 	)
+	return args
+}
+
+func dockerNetworkCreate(ctx context.Context, name, subnet, gateway string, mtu int) error {
+	cmd := exec.CommandContext(ctx, "docker", dockerNetworkCreateArgs(name, subnet, gateway, mtu)...)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("%s: %w", strings.TrimSpace(string(out)), err)
@@ -237,12 +282,33 @@ func dockerNetworkCreate(ctx context.Context, name, subnet, gateway string) erro
 	return nil
 }
 
-func dockerCreateGateway(ctx context.Context, gwName, netName, gwIP, proxyServerIP, configPath, image string) error {
+func dockerEgressNetworkCreateArgs(name string, mtu int) []string {
+	args := []string{
+		"network",
+		"create",
+		"--driver", "bridge",
+	}
+	if mtu > 0 {
+		args = append(args, "--opt", fmt.Sprintf("com.docker.network.driver.mtu=%d", mtu))
+	}
+	args = append(args, name)
+	return args
+}
+
+func dockerEgressNetworkCreate(ctx context.Context, name string, mtu int) error {
+	cmd := exec.CommandContext(ctx, "docker", dockerEgressNetworkCreateArgs(name, mtu)...)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("%s: %w", strings.TrimSpace(string(out)), err)
+	}
+	return nil
+}
+
+func dockerCreateGateway(ctx context.Context, gwName, egressNetName, configPath, image string) error {
 	args := []string{
 		"create",
 		"--name", gwName,
-		"--network", netName,
-		"--ip", gwIP,
+		"--network", egressNetName,
 		"--cap-add", "NET_ADMIN",
 		"--device", "/dev/net/tun:/dev/net/tun",
 		"--sysctl", "net.ipv4.ip_forward=1",

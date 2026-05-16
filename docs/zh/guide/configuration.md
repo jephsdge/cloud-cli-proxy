@@ -22,6 +22,7 @@ bash deploy/scripts/setup-env.sh
 | `HOST_AGENT_MODE` | 否 | `socket` | host-agent 模式。`socket` = 通过 Unix socket 连接独立进程，`embedded` = 嵌入控制面进程内运行 |
 | `HOST_AGENT_SOCKET` | 否 | `/run/cloud-cli-proxy/host-agent.sock` | host-agent Unix socket 路径（仅 socket 模式） |
 | `DATA_DIR` | 否 | `/var/lib/cloud-cli-proxy` | 数据目录，存放运行时文件 |
+| `CLOUD_CLI_PROXY_NETWORK_MTU` | 否 | 空 | 创建受管 Docker bridge 网络（`cloudproxy-net-*` 和 `cloudproxy-egress-*`）时指定 MTU，例如 GRE/VXLAN 环境可设为 `1400` |
 | `SSH_PROXY_ADDR` | 否 | `:2222` | SSH 代理监听地址 |
 | `LOG_FORMAT` | 否 | `json` | 日志格式，`json` 或 `text` |
 | `LOG_LEVEL` | 否 | `info` | 日志级别，`debug` / `info` / `warn` / `error` |
@@ -187,6 +188,6 @@ docker pull ghcr.io/zanel1u/cloud-cli-proxy/control-plane:1.2.3
 | KasmVNC | 1.4.0 | 远程桌面服务 |
 | Chromium | 最新 | 浏览器（配合 KasmVNC） |
 | Fluxbox | — | 轻量窗口管理器 |
-| sing-box | 1.13.3 | 代理模式隧道客户端 |
+| sing-box | 1.13.11 | 代理模式隧道客户端 |
 | Git, tmux, zsh | — | 常用开发工具 |
 | Node.js | LTS | JavaScript 运行时 |
