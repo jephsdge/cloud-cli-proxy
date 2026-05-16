@@ -23,6 +23,7 @@ bash deploy/scripts/setup-env.sh
 | `HOST_AGENT_SOCKET` | No | `/run/cloud-cli-proxy/host-agent.sock` | Host-agent Unix socket path (socket mode only) |
 | `DATA_DIR` | No | `/var/lib/cloud-cli-proxy` | Data directory for runtime files |
 | `CLOUD_CLI_PROXY_NETWORK_MTU` | No | empty | Sets the MTU for newly created managed Docker bridge networks (`cloudproxy-net-*` and `cloudproxy-egress-*`), e.g. `1400` for GRE/VXLAN environments |
+| `CLOUD_CLI_PROXY_EGRESS_NETWORK_BASE` | No | `172.30.0.0/16` | IPv4 /16 CIDR used to derive per-host `cloudproxy-egress-*` subnets; change it if it conflicts with local routes, but keep it away from the sing-box TUN range (`172.19.0.1/30` by default) |
 | `SSH_PROXY_ADDR` | No | `:2222` | SSH proxy listen address |
 | `LOG_FORMAT` | No | `json` | Log format, `json` or `text` |
 | `LOG_LEVEL` | No | `info` | Log level: `debug` / `info` / `warn` / `error` |

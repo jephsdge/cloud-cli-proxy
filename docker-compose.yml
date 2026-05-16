@@ -35,6 +35,7 @@ services:
       CLOUD_CLI_PROXY_SKIP_IMAGE_PULL: ${CLOUD_CLI_PROXY_SKIP_IMAGE_PULL:-false}
       CLOUD_CLI_PROXY_GATEWAY_IMAGE: ghcr.io/zanel1u/cloud-cli-proxy/sing-box-gateway:latest
       CLOUD_CLI_PROXY_NETWORK_MTU: ${CLOUD_CLI_PROXY_NETWORK_MTU:-}
+      CLOUD_CLI_PROXY_EGRESS_NETWORK_BASE: ${CLOUD_CLI_PROXY_EGRESS_NETWORK_BASE:-}
     ports:
       - "${SSH_PROXY_PORT:-2222}:2222"
     privileged: true

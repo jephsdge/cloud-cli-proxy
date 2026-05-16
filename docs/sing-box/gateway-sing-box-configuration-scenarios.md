@@ -371,12 +371,14 @@ root `.env` file:
 
 ```env
 CLOUD_CLI_PROXY_NETWORK_MTU=1400
+CLOUD_CLI_PROXY_EGRESS_NETWORK_BASE=172.30.0.0/16
 ```
 
 As long as `docker-compose.yml` injects it into `control-plane`:
 
 ```yaml
 CLOUD_CLI_PROXY_NETWORK_MTU: ${CLOUD_CLI_PROXY_NETWORK_MTU:-}
+CLOUD_CLI_PROXY_EGRESS_NETWORK_BASE: ${CLOUD_CLI_PROXY_EGRESS_NETWORK_BASE:-}
 ```
 
 it takes effect when control-plane later runs `docker network create`. The build
@@ -463,6 +465,58 @@ networks are created:
 cloudproxy-egress-*
 cloudproxy-net-*
 ```
+
+## Scenario 8.1: cloudproxy-egress Subnet Conflicts With the TUN Address
+
+### Symptom
+
+Inside the gateway:
+
+```text
+eth0 = 172.19.0.2/16
+tun0 = 172.19.0.1/30
+default via 172.19.0.1 dev eth0
+```
+
+First-hop checks fail:
+
+```text
+dial tcp 54.46.4.28:30086: connect: no route to host
+```
+
+or:
+
+```text
+curl --interface eth0 telnet://54.46.4.28:30086
+connect timeout
+```
+
+### Cause
+
+Docker automatically chose `172.19.0.0/16` for `cloudproxy-egress-*`, while
+sing-box TUN also uses `172.19.0.1/30`. The gateway now has the same address
+range on the Docker egress interface and on `tun0`, so routing becomes
+ambiguous.
+
+### Fix
+
+Use a control-plane version that creates `cloudproxy-egress-*` with an explicit
+subnet. By default, it derives per-host subnets from:
+
+```env
+CLOUD_CLI_PROXY_EGRESS_NETWORK_BASE=172.30.0.0/16
+```
+
+If `172.30.0.0/16` conflicts with the host environment, set another IPv4 `/16`
+in `.env`, for example:
+
+```env
+CLOUD_CLI_PROXY_EGRESS_NETWORK_BASE=172.31.0.0/16
+```
+
+Existing Docker networks are immutable. After changing this, rebuild/recreate
+the control-plane and recreate the affected managed host/gateway so Docker
+creates a new `cloudproxy-egress-*` network.
 
 ## Scenario 9: Remote Rule-Set Download Fails
 

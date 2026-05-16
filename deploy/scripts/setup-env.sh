@@ -154,6 +154,10 @@ LOG_LEVEL=info
 
 # Optional: set to 1400 when managed Docker bridge networks leave through GRE/VXLAN or another lower-MTU path.
 CLOUD_CLI_PROXY_NETWORK_MTU=
+
+# Optional: IPv4 /16 CIDR used to derive per-host cloudproxy-egress-* subnets.
+# Keep this away from the sing-box TUN address range (default TUN is 172.19.0.1/30).
+CLOUD_CLI_PROXY_EGRESS_NETWORK_BASE=172.30.0.0/16
 EOF
 } > "$ENV_FILE"
 

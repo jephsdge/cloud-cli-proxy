@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"hash/fnv"
 	"log/slog"
+	"net/netip"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -16,6 +17,8 @@ import (
 
 const gatewayTPProxyPort = 7892
 const gatewayNetworkMTUEnv = "CLOUD_CLI_PROXY_NETWORK_MTU"
+const gatewayEgressNetworkBaseEnv = "CLOUD_CLI_PROXY_EGRESS_NETWORK_BASE"
+const defaultGatewayEgressNetworkBase = "172.30.0.0/16"
 
 // ContainerProxyProvider wires each worker container to a sidecar gateway that
 // runs sing-box (tproxy + iptables). The worker image stays proxy-unaware.
@@ -54,6 +57,10 @@ func (p *ContainerProxyProvider) PrepareHost(ctx context.Context, spec HostNetwo
 	if err != nil {
 		return fmt.Errorf("gateway: invalid network MTU: %w", err)
 	}
+	egressSubnet, egressGateway, err := gatewayEgressNetworkSubnet(hostID)
+	if err != nil {
+		return fmt.Errorf("gateway: invalid egress network base: %w", err)
+	}
 
 	proxyRaw := spec.Egress.Proxy.OutboundConfig
 	serverIP, err := ResolveGatewayProxyServerIP(proxyRaw, spec.Egress.GatewayConfig)
@@ -83,7 +90,7 @@ func (p *ContainerProxyProvider) PrepareHost(ctx context.Context, spec HostNetwo
 	if err := dockerNetworkCreate(ctx, netName, subnet, bridgeGW, networkMTU); err != nil {
 		return fmt.Errorf("gateway: create network: %w", err)
 	}
-	if err := dockerEgressNetworkCreate(ctx, egressNetName, networkMTU); err != nil {
+	if err := dockerEgressNetworkCreate(ctx, egressNetName, egressSubnet, egressGateway, networkMTU); err != nil {
 		p.teardownGateway(ctx, hostID)
 		return fmt.Errorf("gateway: create egress network: %w", err)
 	}
@@ -162,6 +169,7 @@ func (p *ContainerProxyProvider) PrepareHost(ctx context.Context, spec HostNetwo
 		"host_id", hostID,
 		"network", netName,
 		"egress_network", egressNetName,
+		"egress_subnet", egressSubnet,
 		"gateway", gwName,
 		"gateway_ip", gwIP,
 		"worker_ip", workerIP,
@@ -256,6 +264,28 @@ func gatewayNetworkMTU() (int, error) {
 	return mtu, nil
 }
 
+func gatewayEgressNetworkSubnet(hostID string) (subnet string, gateway string, err error) {
+	raw := strings.TrimSpace(os.Getenv(gatewayEgressNetworkBaseEnv))
+	if raw == "" {
+		raw = defaultGatewayEgressNetworkBase
+	}
+
+	prefix, err := netip.ParsePrefix(raw)
+	if err != nil {
+		return "", "", fmt.Errorf("%s must be an IPv4 /16 CIDR: %w", gatewayEgressNetworkBaseEnv, err)
+	}
+	prefix = prefix.Masked()
+	if !prefix.Addr().Is4() || prefix.Bits() != 16 {
+		return "", "", fmt.Errorf("%s must be an IPv4 /16 CIDR, got %q", gatewayEgressNetworkBaseEnv, raw)
+	}
+
+	addr := prefix.Addr().As4()
+	third := subnetThirdOctet(hostID)
+	return fmt.Sprintf("%d.%d.%d.0/24", addr[0], addr[1], third),
+		fmt.Sprintf("%d.%d.%d.1", addr[0], addr[1], third),
+		nil
+}
+
 func dockerNetworkCreateArgs(name, subnet, gateway string, mtu int) []string {
 	args := []string{
 		"network",
@@ -282,7 +312,7 @@ func dockerNetworkCreate(ctx context.Context, name, subnet, gateway string, mtu 
 	return nil
 }
 
-func dockerEgressNetworkCreateArgs(name string, mtu int) []string {
+func dockerEgressNetworkCreateArgs(name, subnet, gateway string, mtu int) []string {
 	args := []string{
 		"network",
 		"create",
@@ -291,12 +321,16 @@ func dockerEgressNetworkCreateArgs(name string, mtu int) []string {
 	if mtu > 0 {
 		args = append(args, "--opt", fmt.Sprintf("com.docker.network.driver.mtu=%d", mtu))
 	}
+	args = append(args,
+		"--subnet", subnet,
+		"--gateway", gateway,
+	)
 	args = append(args, name)
 	return args
 }
 
-func dockerEgressNetworkCreate(ctx context.Context, name string, mtu int) error {
-	cmd := exec.CommandContext(ctx, "docker", dockerEgressNetworkCreateArgs(name, mtu)...)
+func dockerEgressNetworkCreate(ctx context.Context, name, subnet, gateway string, mtu int) error {
+	cmd := exec.CommandContext(ctx, "docker", dockerEgressNetworkCreateArgs(name, subnet, gateway, mtu)...)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("%s: %w", strings.TrimSpace(string(out)), err)

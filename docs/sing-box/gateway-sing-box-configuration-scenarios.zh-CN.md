@@ -359,12 +359,14 @@ CLOUD_CLI_PROXY_NETWORK_MTU=1400
 
 ```env
 CLOUD_CLI_PROXY_NETWORK_MTU=1400
+CLOUD_CLI_PROXY_EGRESS_NETWORK_BASE=172.30.0.0/16
 ```
 
 只要 `docker-compose.yml` 里把它注入到 `control-plane`：
 
 ```yaml
 CLOUD_CLI_PROXY_NETWORK_MTU: ${CLOUD_CLI_PROXY_NETWORK_MTU:-}
+CLOUD_CLI_PROXY_EGRESS_NETWORK_BASE: ${CLOUD_CLI_PROXY_EGRESS_NETWORK_BASE:-}
 ```
 
 它就会在 control-plane 后续执行 `docker network create` 时生效。build 阶段不需要这个变量。
@@ -444,6 +446,57 @@ default via 172.17.0.1 dev eth1
 cloudproxy-egress-*
 cloudproxy-net-*
 ```
+
+## 场景 8.1：`cloudproxy-egress` 子网和 TUN 地址冲突
+
+### 现象
+
+gateway 内部看到：
+
+```text
+eth0 = 172.19.0.2/16
+tun0 = 172.19.0.1/30
+default via 172.19.0.1 dev eth0
+```
+
+第一跳连通性检查失败：
+
+```text
+dial tcp 54.46.4.28:30086: connect: no route to host
+```
+
+或者：
+
+```text
+curl --interface eth0 telnet://54.46.4.28:30086
+connect timeout
+```
+
+### 原因
+
+Docker 自动给 `cloudproxy-egress-*` 分配了 `172.19.0.0/16`，而 sing-box
+TUN 也用了 `172.19.0.1/30`。此时 gateway 的 Docker 出口接口和 `tun0`
+落在同一个地址段，路由会变得不明确。
+
+### 处理
+
+升级到会显式创建 `cloudproxy-egress-*` 子网的 control-plane。默认会基于
+下面的 /16 网段为每个 host 派生独立 /24：
+
+```env
+CLOUD_CLI_PROXY_EGRESS_NETWORK_BASE=172.30.0.0/16
+```
+
+如果 `172.30.0.0/16` 和宿主环境冲突，可以在 `.env` 中换成另一个 IPv4
+`/16`，例如：
+
+```env
+CLOUD_CLI_PROXY_EGRESS_NETWORK_BASE=172.31.0.0/16
+```
+
+Docker network 的 subnet 不能原地修改。变更后需要重建 control-plane，并重建
+受影响的 managed host/gateway，让 Docker 重新创建新的
+`cloudproxy-egress-*` 网络。
 
 ## 场景 9：规则集下载失败
 

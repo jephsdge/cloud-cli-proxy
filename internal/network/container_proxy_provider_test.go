@@ -3,6 +3,7 @@ package network
 import (
 	"os"
 	"reflect"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -153,6 +154,49 @@ func TestGatewayNetworkMTU_Invalid(t *testing.T) {
 	}
 }
 
+func TestGatewayEgressNetworkSubnet_Default(t *testing.T) {
+	hostID := "test-host-id"
+	third := subnetThirdOctet(hostID)
+
+	subnet, gateway, err := gatewayEgressNetworkSubnet(hostID)
+	if err != nil {
+		t.Fatalf("gatewayEgressNetworkSubnet returned error: %v", err)
+	}
+
+	if want := "172.30." + strconv.Itoa(third) + ".0/24"; subnet != want {
+		t.Errorf("egress subnet = %q, want %q", subnet, want)
+	}
+	if want := "172.30." + strconv.Itoa(third) + ".1"; gateway != want {
+		t.Errorf("egress gateway = %q, want %q", gateway, want)
+	}
+}
+
+func TestGatewayEgressNetworkSubnet_CustomBase(t *testing.T) {
+	t.Setenv(gatewayEgressNetworkBaseEnv, "172.31.0.0/16")
+	hostID := "test-host-id"
+	third := subnetThirdOctet(hostID)
+
+	subnet, gateway, err := gatewayEgressNetworkSubnet(hostID)
+	if err != nil {
+		t.Fatalf("gatewayEgressNetworkSubnet returned error: %v", err)
+	}
+
+	if want := "172.31." + strconv.Itoa(third) + ".0/24"; subnet != want {
+		t.Errorf("egress subnet = %q, want %q", subnet, want)
+	}
+	if want := "172.31." + strconv.Itoa(third) + ".1"; gateway != want {
+		t.Errorf("egress gateway = %q, want %q", gateway, want)
+	}
+}
+
+func TestGatewayEgressNetworkSubnet_InvalidBase(t *testing.T) {
+	t.Setenv(gatewayEgressNetworkBaseEnv, "172.31.20.0/24")
+
+	if _, _, err := gatewayEgressNetworkSubnet("test-host-id"); err == nil {
+		t.Fatal("gatewayEgressNetworkSubnet expected error for non-/16 base")
+	}
+}
+
 func TestDockerNetworkCreateArgs_WithMTU(t *testing.T) {
 	got := dockerNetworkCreateArgs("cloudproxy-net-host", "10.99.20.0/24", "10.99.20.1", 1400)
 	want := []string{
@@ -179,12 +223,14 @@ func TestDockerNetworkCreateArgs_DefaultMTU(t *testing.T) {
 }
 
 func TestDockerEgressNetworkCreateArgs_WithMTU(t *testing.T) {
-	got := dockerEgressNetworkCreateArgs("cloudproxy-egress-host", 1400)
+	got := dockerEgressNetworkCreateArgs("cloudproxy-egress-host", "172.30.20.0/24", "172.30.20.1", 1400)
 	want := []string{
 		"network",
 		"create",
 		"--driver", "bridge",
 		"--opt", "com.docker.network.driver.mtu=1400",
+		"--subnet", "172.30.20.0/24",
+		"--gateway", "172.30.20.1",
 		"cloudproxy-egress-host",
 	}
 	if !reflect.DeepEqual(got, want) {
@@ -209,7 +255,7 @@ func TestPrepareHost_ConnectsGatewayNetworksBeforeStart(t *testing.T) {
 	}
 
 	body := string(source)
-	createEgressIdx := strings.Index(body, "dockerEgressNetworkCreate(ctx, egressNetName, networkMTU)")
+	createEgressIdx := strings.Index(body, "dockerEgressNetworkCreate(ctx, egressNetName, egressSubnet, egressGateway, networkMTU)")
 	createGatewayIdx := strings.Index(body, "dockerCreateGateway(ctx, gwName, egressNetName")
 	connectIsolatedIdx := strings.Index(body, "dockerNetworkConnect(ctx, netName, gwName, gwIP)")
 	startIdx := strings.Index(body, "dockerStartGateway(ctx")
