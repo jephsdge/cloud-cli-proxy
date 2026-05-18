@@ -516,14 +516,14 @@ func TestContainerTarget_ZeroValue(t *testing.T) {
 func TestContainerTarget_FieldsSet(t *testing.T) {
 	ct := ContainerTarget{
 		Addr:       "10.0.0.1:22",
-		User:       "workspace",
+		User:       "work",
 		Password:   "secret",
 		PrivateKey: "-----BEGIN OPENSSH PRIVATE KEY-----\nfake\n-----END OPENSSH PRIVATE KEY-----\n",
 	}
 	if ct.Addr != "10.0.0.1:22" {
 		t.Fatalf("unexpected Addr: %s", ct.Addr)
 	}
-	if ct.User != "workspace" {
+	if ct.User != "work" {
 		t.Fatalf("unexpected User: %s", ct.User)
 	}
 	if ct.Password != "secret" {

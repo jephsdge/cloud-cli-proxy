@@ -112,7 +112,7 @@ func TestBuildCreateArgs(t *testing.T) {
 		{"name", "--name test-container"},
 		{"hostname", "--hostname test-container"},
 		{"mode", "MODE=local"},
-		{"user", "CONTAINER_USER=workspace"},
+		{"user", "CONTAINER_USER=work"},
 		{"password", "CONTAINER_SSH_PASSWORD=secret123"},
 		{"volume", "/test/project:/workspace"},
 		{"memory", "--memory 2048m"},

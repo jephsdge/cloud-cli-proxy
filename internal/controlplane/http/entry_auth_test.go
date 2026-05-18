@@ -77,7 +77,7 @@ func doAuth(t *testing.T, store EntryStore, username, password string) (*httptes
 	// 创建临时 image.lock，默认 image_version 与测试常用 v3 tag 对齐
 	dir := t.TempDir()
 	lockPath := filepath.Join(dir, "image.lock")
-	lockContent := "image_name: ghcr.io/example/cloud-claude:v3.0.0\nimage_version: v3.0.0\nhome_mount: /workspace\ndefault_user: workspace\n"
+	lockContent := "image_name: ghcr.io/example/cloud-claude:v3.0.0\nimage_version: v3.0.0\nhome_mount: /home/work\ndefault_user: work\n"
 	if err := os.WriteFile(lockPath, []byte(lockContent), 0644); err != nil {
 		t.Fatalf("write test image.lock: %v", err)
 	}

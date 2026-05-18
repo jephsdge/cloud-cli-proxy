@@ -75,8 +75,8 @@ func main() {
 
 	sshDoctorCmd := &cobra.Command{
 		Use:           "doctor",
-		Short:         "体检远端容器 /workspace/.ssh 下的密钥文件（owner/mode/PEM 尾换行）",
-		Long:          "扫描远端 /workspace/.ssh 下所有文件，报告 owner 不一致、mode 不规范、PEM 私钥缺末尾换行等常见问题。\n带 --fix 时会尝试自动修复（chown / chmod / 追加换行）。",
+		Short:         "体检远端容器用户 HOME 下 .ssh 里的密钥文件（owner/mode/PEM 尾换行）",
+		Long:          "扫描远端用户 HOME 下 .ssh 里的所有文件，报告 owner 不一致、mode 不规范、PEM 私钥缺末尾换行等常见问题。\n带 --fix 时会尝试自动修复（chown / chmod / 追加换行）。",
 		SilenceUsage:  true,
 		SilenceErrors: true,
 		RunE:          runSSHDoctor,
@@ -232,7 +232,7 @@ func runSSHDoctor(cmd *cobra.Command, args []string) error {
 	}
 	fmt.Printf("\r\033[2K%s .... 成功\n", stage)
 
-	fmt.Println("正在体检远端 /workspace/.ssh ...")
+	fmt.Println("正在体检远端用户 HOME 下的 .ssh ...")
 
 	sshCfg := cloudclaude.SSHConfig{
 		Host:     authResp.SSHHost,

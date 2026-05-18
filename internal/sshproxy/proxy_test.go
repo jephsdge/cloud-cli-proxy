@@ -290,11 +290,11 @@ func TestNewServer_Defaults(t *testing.T) {
 	if server.addr != ":2222" {
 		t.Fatalf("expected addr :2222, got %s", server.addr)
 	}
-	if server.containerUser != "workspace" {
-		t.Fatalf("expected default containerUser 'workspace', got %q", server.containerUser)
+	if server.containerUser != "work" {
+		t.Fatalf("expected default containerUser 'work', got %q", server.containerUser)
 	}
-	if server.containerPassword != "workspace" {
-		t.Fatalf("expected default containerPassword 'workspace', got %q", server.containerPassword)
+	if server.containerPassword != "work" {
+		t.Fatalf("expected default containerPassword 'work', got %q", server.containerPassword)
 	}
 }
 
@@ -678,12 +678,12 @@ func TestHandleConnection_AndChannel_WithTarget(t *testing.T) {
 	resolver := &stubResolverRepo{
 		hostAuth: repository.HostSSHAuth{
 			EntryPassword: targetPassword,
-			ContainerUser: "workspace",
+			ContainerUser: "work",
 		},
 		targetAddr: targetAddr,
 	}
 	logger := slog.New(slog.DiscardHandler)
-	s, err := NewServer(":0", "workspace", "targetpass", "", resolver, logger)
+	s, err := NewServer(":0", "work", "targetpass", "", resolver, logger)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -732,12 +732,12 @@ func TestHandleConnection_DirectTCPIP_ChannelDispatch(t *testing.T) {
 	resolver := &stubResolverRepo{
 		hostAuth: repository.HostSSHAuth{
 			EntryPassword: targetPassword,
-			ContainerUser: "workspace",
+			ContainerUser: "work",
 		},
 		targetAddr: targetAddr,
 	}
 	logger := slog.New(slog.DiscardHandler)
-	s, err := NewServer(":0", "workspace", "targetpass", "", resolver, logger)
+	s, err := NewServer(":0", "work", "targetpass", "", resolver, logger)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -792,12 +792,12 @@ func TestHandleConnection_UnknownChannelType_Rejected(t *testing.T) {
 	resolver := &stubResolverRepo{
 		hostAuth: repository.HostSSHAuth{
 			EntryPassword: targetPassword,
-			ContainerUser: "workspace",
+			ContainerUser: "work",
 		},
 		targetAddr: targetAddr,
 	}
 	logger := slog.New(slog.DiscardHandler)
-	s, err := NewServer(":0", "workspace", "targetpass", "", resolver, logger)
+	s, err := NewServer(":0", "work", "targetpass", "", resolver, logger)
 	if err != nil {
 		t.Fatal(err)
 	}

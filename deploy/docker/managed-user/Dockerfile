@@ -2,10 +2,11 @@
 FROM ubuntu:24.04
 
 ENV DEBIAN_FRONTEND=noninteractive
-ENV HOME=/workspace
-ENV WORKSPACE_USER=workspace
+ENV HOME=/home/work
+ENV WORKSPACE_USER=work
 ENV WORKSPACE_UID=1000
 ENV WORKSPACE_GID=1000
+ENV WORKSPACE_HOME=/home/work
 ARG CLOUD_CLI_PROXY_WORKER_EXTRA_APT_PACKAGES=""
 
 # 启用 BuildKit apt cache mount（必须先移除 docker-clean，否则 cache 会被自动清空）
@@ -116,7 +117,7 @@ ENV LC_ALL=en_US.UTF-8
 RUN userdel -f ubuntu 2>/dev/null || true \
     && groupdel ubuntu 2>/dev/null || true \
     && groupadd --force --gid "${WORKSPACE_GID}" "${WORKSPACE_USER}" \
-    && useradd --uid "${WORKSPACE_UID}" --gid "${WORKSPACE_GID}" --home-dir /workspace --create-home --shell /bin/bash "${WORKSPACE_USER}" \
+    && useradd --uid "${WORKSPACE_UID}" --gid "${WORKSPACE_GID}" --home-dir "${WORKSPACE_HOME}" --create-home --shell /bin/bash "${WORKSPACE_USER}" \
     && echo "${WORKSPACE_USER} ALL=(ALL) NOPASSWD:ALL" >/etc/sudoers.d/workspace \
     && chmod 0440 /etc/sudoers.d/workspace
 
@@ -137,11 +138,11 @@ RUN set -eux; \
     claude --version; \
     claude --version | awk '{print $1}' > /etc/cloud-claude/claude-code.version
 
-RUN mkdir -p /workspace/.ssh /var/run/sshd \
-    && chown -R "${WORKSPACE_UID}:${WORKSPACE_GID}" /workspace \
-    && chmod 0700 /workspace/.ssh
+RUN mkdir -p "${WORKSPACE_HOME}/.ssh" /workspace /var/run/sshd \
+    && chown -R "${WORKSPACE_UID}:${WORKSPACE_GID}" "${WORKSPACE_HOME}" /workspace \
+    && chmod 0700 "${WORKSPACE_HOME}/.ssh"
 
-# v3: 预建 mergerfs / 持久化 volume 挂载点 + chown 到 workspace 用户。
+# v3: 预建 mergerfs / 持久化 volume 挂载点 + chown 到默认运行用户。
 # C5 / M17 防御：named volume 首次挂载会继承镜像中目标路径的权限；
 # entrypoint 会在运行时再做一次 chown 作为二次保险（Plan 03 prepare_v3_dirs）。
 RUN mkdir -p \

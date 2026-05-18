@@ -14,8 +14,8 @@ func minimalCreateHostRequest(hostID string) agentapi.HostActionRequest {
 		HostID:        hostID,
 		Action:        agentapi.ActionCreateHost,
 		ImageName:     "img:local",
-		DefaultUser:   "workspace",
-		HomeMount:     "/workspace",
+		DefaultUser:   "work",
+		HomeMount:     "/home/work",
 		ContainerName: "c-test",
 		HomeDir:       "/tmp/cloudproxy-test-home-" + hostID,
 		// Phase 29.1：buildCreateArgs/syncContainerCredentials 对空 EntryPassword fail-fast，
@@ -78,7 +78,7 @@ func TestHostActionRequest_VolumesOmitempty(t *testing.T) {
 }
 
 func TestHostActionRequest_V2Compat(t *testing.T) {
-	oldJSON := `{"task_id":"t","host_id":"h","action":"create_host","image_name":"img","default_user":"workspace","home_mount":"/workspace","rebuild_mode":"","container_name":"c","home_dir":"/d","labels":null,"timezone":"","hostname":""}`
+	oldJSON := `{"task_id":"t","host_id":"h","action":"create_host","image_name":"img","default_user":"work","home_mount":"/home/work","rebuild_mode":"","container_name":"c","home_dir":"/d","labels":null,"timezone":"","hostname":""}`
 	var req agentapi.HostActionRequest
 	if err := json.Unmarshal([]byte(oldJSON), &req); err != nil {
 		t.Fatalf("v2.0 JSON must unmarshal cleanly: %v", err)
@@ -133,7 +133,7 @@ func TestHostActionRequest_ClaudeAccountID_RoundTrip(t *testing.T) {
 // TestHostActionRequest_ClaudeAccountID_ForwardCompat 守护 v2→v3 前向兼容：
 // v3 服务器返回 claude_account_id 时，旧版消费者不应解析失败。
 func TestHostActionRequest_ClaudeAccountID_ForwardCompat(t *testing.T) {
-	newJSON := `{"task_id":"t","host_id":"h","action":"create_host","image_name":"img","default_user":"workspace","home_mount":"/workspace","rebuild_mode":"","container_name":"c","home_dir":"/d","labels":null,"timezone":"","hostname":"","claude_account_id":"acct-99"}`
+	newJSON := `{"task_id":"t","host_id":"h","action":"create_host","image_name":"img","default_user":"work","home_mount":"/home/work","rebuild_mode":"","container_name":"c","home_dir":"/d","labels":null,"timezone":"","hostname":"","claude_account_id":"acct-99"}`
 	var req agentapi.HostActionRequest
 	if err := json.Unmarshal([]byte(newJSON), &req); err != nil {
 		t.Fatalf("v3 JSON with claude_account_id must unmarshal cleanly: %v", err)
@@ -208,10 +208,27 @@ func TestBuildCreateArgs_WorkerIdentityEnv(t *testing.T) {
 		"CONTAINER_HOME=/home/work",
 		"HOME=/home/work",
 		"/tmp/cloudproxy-test-home-identity:/home/work",
+		"/tmp/cloudproxy-test-home-identity-ssh-host-keys:/etc/ssh/host-keys",
 	} {
 		if !strings.Contains(joined, want) {
 			t.Fatalf("missing %q in args=%v", want, args)
 		}
+	}
+}
+
+func TestHostSSHHostKeysDir(t *testing.T) {
+	if got := hostSSHHostKeysDir(agentapi.HostActionRequest{
+		HostID:  "h1",
+		HomeDir: "/data/hosts/h1/home",
+	}); got != "/data/hosts/h1/ssh-host-keys" {
+		t.Fatalf("hostSSHHostKeysDir with home sibling = %q", got)
+	}
+
+	if got := hostSSHHostKeysDir(agentapi.HostActionRequest{
+		HostID:  "h2",
+		HomeDir: "/tmp/custom-home-h2",
+	}); got != "/tmp/custom-home-h2-ssh-host-keys" {
+		t.Fatalf("hostSSHHostKeysDir with custom home = %q", got)
 	}
 }
 

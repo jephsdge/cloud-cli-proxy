@@ -272,15 +272,7 @@ func (h *SSHKeyHandler) syncKeysToRunningHosts(userID string) {
 		return
 	}
 
-	owner, err := h.store.GetUser(ctx, userID)
-	if err != nil {
-		h.logger.Warn("sync ssh keys: get user failed", "user_id", userID, "error", err)
-		return
-	}
-	user := owner.Username
-	if user == "" {
-		user = "workspace"
-	}
+	user := configuredWorkerUser()
 
 	for _, host := range hosts {
 		containerName := "cloudproxy-" + host.ID
@@ -291,7 +283,7 @@ func (h *SSHKeyHandler) syncKeysToRunningHosts(userID string) {
 }
 
 func syncInboundKeysToContainer(ctx context.Context, containerName, user string, keys []repository.SSHKey) {
-	sshDir := "/workspace/.ssh"
+	sshDir := workerSSHDir()
 	var lines []string
 	if proxyPub := loadProxyPublicKey(); proxyPub != "" {
 		lines = append(lines, proxyPub)
@@ -308,8 +300,8 @@ func syncInboundKeysToContainer(ctx context.Context, containerName, user string,
 	}
 
 	script := fmt.Sprintf(
-		"mkdir -p %s && cat > %s/authorized_keys && chmod 600 %s/authorized_keys && chown %s:%s %s/authorized_keys",
-		sshDir, sshDir, sshDir, user, user, sshDir,
+		"mkdir -p %q && chown %q %q && cat > %q && chmod 600 %q && chown %q %q",
+		sshDir, user, sshDir, sshDir+"/authorized_keys", sshDir+"/authorized_keys", user, sshDir+"/authorized_keys",
 	)
 	cmd := exec.CommandContext(ctx, "docker", "exec", "-i", containerName, "bash", "-c", script)
 	cmd.Stdin = strings.NewReader(content)
@@ -320,7 +312,7 @@ func syncInboundKeysToContainer(ctx context.Context, containerName, user string,
 }
 
 func syncOutboundKeysToContainer(ctx context.Context, containerName, user string, keys []repository.SSHKey) {
-	sshDir := "/workspace/.ssh"
+	sshDir := workerSSHDir()
 
 	outboundIdx := 0
 	for _, key := range keys {
@@ -348,8 +340,8 @@ func syncOutboundKeysToContainer(ctx context.Context, containerName, user string
 
 		if key.PrivateKey != "" {
 			script := fmt.Sprintf(
-				"mkdir -p %s && cat > %s && chmod 600 %s && chown %s:%s %s",
-				sshDir, keyFile, keyFile, user, user, keyFile,
+				"mkdir -p %q && chown %q %q && cat > %q && chmod 600 %q && chown %q %q",
+				sshDir, user, sshDir, keyFile, keyFile, user, keyFile,
 			)
 			cmd := exec.CommandContext(ctx, "docker", "exec", "-i", containerName, "bash", "-c", script)
 			cmd.Stdin = strings.NewReader(key.PrivateKey)
@@ -361,8 +353,8 @@ func syncOutboundKeysToContainer(ctx context.Context, containerName, user string
 
 		if key.PublicKey != "" {
 			script := fmt.Sprintf(
-				"mkdir -p %s && cat > %s && chmod 644 %s && chown %s:%s %s",
-				sshDir, pubFile, pubFile, user, user, pubFile,
+				"mkdir -p %q && chown %q %q && cat > %q && chmod 644 %q && chown %q %q",
+				sshDir, user, sshDir, pubFile, pubFile, user, pubFile,
 			)
 			cmd := exec.CommandContext(ctx, "docker", "exec", "-i", containerName, "bash", "-c", script)
 			cmd.Stdin = strings.NewReader(key.PublicKey)
@@ -389,7 +381,7 @@ func readContainerAuthorizedKeys(ctx context.Context, hosts []repository.Host) [
 	timeout, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 
-	cmd := exec.CommandContext(timeout, "docker", "exec", "-i", containerName, "cat", "/workspace/.ssh/authorized_keys")
+	cmd := exec.CommandContext(timeout, "docker", "exec", "-i", containerName, "cat", workerSSHDir()+"/authorized_keys")
 	out, err := cmd.Output()
 	if err != nil {
 		return nil
@@ -414,7 +406,7 @@ func readContainerAuthorizedKeyFingerprints(ctx context.Context, containerName s
 	timeout, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 
-	cmd := exec.CommandContext(timeout, "docker", "exec", "-i", containerName, "cat", "/workspace/.ssh/authorized_keys")
+	cmd := exec.CommandContext(timeout, "docker", "exec", "-i", containerName, "cat", workerSSHDir()+"/authorized_keys")
 	out, err := cmd.Output()
 	if err != nil {
 		return nil

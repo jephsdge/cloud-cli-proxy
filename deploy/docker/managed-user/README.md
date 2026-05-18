@@ -4,12 +4,15 @@
 
 默认运行时约定如下：
 
-- 主目录持久化挂载点固定为 `/workspace`
-- 默认用户固定为 `workspace`
+- 主目录持久化挂载点默认为 `/home/work`
+- 项目工作区固定为 `/workspace`，不再作为用户 HOME
+- SSH 服务端 host key 按 host 持久化到宿主机 `runtime-data/hosts/<host_id>/ssh-host-keys`，容器内挂载为 `/etc/ssh/host-keys`
+- 默认用户固定为 `work`
 - 默认 UID/GID 为 `1000:1000`
 - 控制面与 host-agent 必须统一读取 `image.lock` 中的同一个镜像全名
-- 默认重建模式是 `preserve-home`，即重建系统层但保留 `/workspace`
-- `factory_reset_mode: wipe-/workspace` 仅作为后续显式工厂重置入口的契约，不在 Phase 1 自动执行
+- 默认重建模式是 `preserve-home`，即重建系统层但保留 `/home/work`
+- `factory_reset_mode: wipe-home` 仅作为后续显式工厂重置入口的契约，不在 Phase 1 自动执行
+- 普通重建和工厂重置都不删除 SSH host key；只有删除 host 数据目录或重新创建新 host_id 时才会生成新的服务端身份
 
 Phase 2 只允许在这个模板旁边新增网络准备钩子接口，不在本计划内落地隧道、出口 IP 绑定或其他网络强约束实现。
 
@@ -23,10 +26,10 @@ Phase 2 只允许在这个模板旁边新增网络准备钩子接口，不在本
 
 worker 容器运行时支持通过 control-plane 环境变量配置 Linux 用户身份：
 
-- `CLOUD_CLI_PROXY_WORKER_USER`：容器内用户名，默认 `workspace`
+- `CLOUD_CLI_PROXY_WORKER_USER`：容器内用户名，默认 `work`
 - `CLOUD_CLI_PROXY_WORKER_UID`：容器内 UID，默认 `1000`
 - `CLOUD_CLI_PROXY_WORKER_GID`：容器内 GID，默认 `1000`
-- `CLOUD_CLI_PROXY_WORKER_HOME`：容器内主目录和持久化挂载点，默认 `/workspace`
+- `CLOUD_CLI_PROXY_WORKER_HOME`：容器内主目录和持久化挂载点，可选；默认 `/home/${CLOUD_CLI_PROXY_WORKER_USER}`
 
 如果把宿主机目录 bind mount 到 worker，建议把 UID/GID 配成宿主机用户一致，避免容器内初始化把目录属主改成 `1000:1000`。例如宿主机用户是 `work`：
 
@@ -34,7 +37,7 @@ worker 容器运行时支持通过 control-plane 环境变量配置 Linux 用户
 CLOUD_CLI_PROXY_WORKER_USER=work
 CLOUD_CLI_PROXY_WORKER_UID=$(id -u)
 CLOUD_CLI_PROXY_WORKER_GID=$(id -g)
-CLOUD_CLI_PROXY_WORKER_HOME=/home/work
+# CLOUD_CLI_PROXY_WORKER_HOME=/home/work  # 可选，默认会按用户名推导
 ```
 
 这些变量由 control-plane 在创建新 worker 容器时透传为 `CONTAINER_USER`、`CONTAINER_UID`、`CONTAINER_GID`、`CONTAINER_HOME`。修改后需要重建 control-plane 并重新创建 worker 容器；已经存在的 worker 不会自动改名或迁移主目录。

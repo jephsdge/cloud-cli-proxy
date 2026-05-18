@@ -3,10 +3,10 @@ local_dev_image_name: ghcr.io/zanel1u/cloud-cli-proxy/managed-user:latest
 base_image: ubuntu:24.04
 pull_policy: never-implicit-latest
 ssh_port: 22
-home_mount: /workspace
-default_user: workspace
+home_mount: /home/work
+default_user: work
 rebuild_mode_default: preserve-home
-factory_reset_mode: wipe-/workspace
+factory_reset_mode: wipe-home
 # v3.0 baseline — Phase 29 追加
 image_version: v3.3.0
 mergerfs_version: 2.41.1

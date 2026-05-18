@@ -15,11 +15,11 @@ type SSHDoctorOptions struct {
 	Fix bool
 }
 
-// FileReport 描述 /workspace/.ssh 下单个文件的健康状况。
+// FileReport 描述远端用户 HOME 下 .ssh 单个文件的健康状况。
 type FileReport struct {
 	Path       string
 	Kind       string // "private" | "public" | "authorized_keys" | "known_hosts" | "config" | "other"
-	Owner      string // 形如 "workspace:workspace" 或 "root:root"
+	Owner      string // 形如 "work:work" 或 "root:root"
 	Mode       string // 形如 "0600"
 	FirstLine  string // 仅保留，便于报告调试
 	OwnerOK    bool
@@ -39,7 +39,7 @@ type SSHDoctorResult struct {
 	SudoOK  bool
 }
 
-const defaultSSHDir = "/workspace/.ssh"
+const defaultSSHDir = "$HOME/.ssh"
 
 // scanScript 是一次性远端扫描脚本。输出格式：
 //
@@ -50,9 +50,10 @@ const defaultSSHDir = "/workspace/.ssh"
 //
 // firstline 已 tr 掉 '|' 与 '\r'，防止破坏列分隔。
 const scanScript = `set -u
-D=/workspace/.ssh
+D="${HOME}/.ssh"
 echo "USER=$(id -un)"
 echo "SUDO_OK=$(sudo -n true 2>/dev/null && echo y || echo n)"
+echo "SSHDIR=$D"
 if [ ! -d "$D" ]; then
   echo "SSHDIR_MISSING=$D"
   exit 0
@@ -69,7 +70,7 @@ find . -maxdepth 1 -type f -print0 2>/dev/null | sort -z | while IFS= read -r -d
 done
 `
 
-// RunSSHDoctor 通过 SSH 连接远端容器，扫描 /workspace/.ssh 下所有文件的健康状况；
+// RunSSHDoctor 通过 SSH 连接远端容器，扫描用户 HOME 下 .ssh 里的所有文件；
 // 若 opts.Fix 为 true，则尝试逐项修复（chown / chmod / 追加 PEM 末尾换行）。
 func RunSSHDoctor(cfg SSHConfig, opts SSHDoctorOptions) (*SSHDoctorResult, error) {
 	conn, err := sshConnect(cfg)
@@ -132,6 +133,8 @@ func parseScanOutput(raw string) *SSHDoctorResult {
 			r.User = strings.TrimPrefix(line, "USER=")
 		case strings.HasPrefix(line, "SUDO_OK="):
 			r.SudoOK = strings.TrimPrefix(line, "SUDO_OK=") == "y"
+		case strings.HasPrefix(line, "SSHDIR="):
+			r.SSHDir = strings.TrimPrefix(line, "SSHDIR=")
 		case strings.HasPrefix(line, "SSHDIR_MISSING="):
 			r.Missing = true
 			r.SSHDir = strings.TrimPrefix(line, "SSHDIR_MISSING=")

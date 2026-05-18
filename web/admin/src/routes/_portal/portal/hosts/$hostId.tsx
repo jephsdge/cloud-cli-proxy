@@ -314,7 +314,7 @@ function PortalHostDetail() {
                   <div className="space-y-2 text-sm text-muted-foreground">
                     <p>重建将重置容器系统环境，重建过程中主机将暂时不可访问。</p>
                     <div className="rounded-md border bg-muted/50 p-2.5 text-xs space-y-1">
-                      <p><strong className="text-foreground">保留：</strong>home 目录（/workspace）下所有文件、SSH 密钥（自动重新注入）、SSH 密码</p>
+                      <p><strong className="text-foreground">保留：</strong>worker HOME 目录下所有文件、SSH 密钥（自动重新注入）、SSH 密码</p>
                       <p><strong className="text-foreground">清除：</strong>通过 apt 安装的额外软件包、系统级配置修改、/tmp 等临时目录</p>
                     </div>
                   </div>

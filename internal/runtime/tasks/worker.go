@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"sync"
@@ -26,7 +27,8 @@ const pullImageTimeout = 5 * time.Minute
 
 const (
 	defaultHostRoot       = "/var/lib/cloud-cli-proxy/hosts/"
-	defaultWorkspaceMount = "/workspace"
+	defaultWorkerUser     = "work"
+	sshHostKeysMountPoint = "/etc/ssh/host-keys"
 	taskStatePending      = "pending"
 	taskStateRunning      = "running"
 	taskStateSucceeded    = "succeeded"
@@ -236,6 +238,7 @@ func actionToHostStatus(action agentapi.HostAction) string {
 func (w *Worker) buildCreateArgs(request agentapi.HostActionRequest, containerName, hostname string) ([]string, error) {
 	homeDir := firstNonEmpty(request.HomeDir, hostHomeDir(request.HostID))
 	homeMount := workerHomeMount(request)
+	sshHostKeysDir := hostSSHHostKeysDir(request)
 	identity := request.WorkerIdentity
 	locale := identity.Locale
 
@@ -272,7 +275,7 @@ func (w *Worker) buildCreateArgs(request agentapi.HostActionRequest, containerNa
 		return nil, fmt.Errorf("host %s entry_password is empty; refusing to build create args", request.HostID)
 	}
 
-	linuxUser := firstNonEmpty(os.Getenv("CLOUD_CLI_PROXY_WORKER_USER"), request.DefaultUser, "workspace")
+	linuxUser := workerContainerUser(request)
 	args = append(args,
 		"-e", "TZ="+firstNonEmpty(identity.Timezone, request.Timezone, "America/New_York"),
 		"-e", "LANG="+firstNonEmpty(locale.Lang, "en_US.UTF-8"),
@@ -287,6 +290,7 @@ func (w *Worker) buildCreateArgs(request agentapi.HostActionRequest, containerNa
 		"-e", "CLOUDPROXY_BROWSER_LANGUAGE="+firstNonEmpty(identity.BrowserLanguage, "en-US"),
 		"-e", "CLOUDPROXY_BROWSER_WINDOW_SIZE="+firstNonEmpty(identity.BrowserWindowSize, "1920x1080"),
 		"-v", fmt.Sprintf("%s:%s", homeDir, homeMount),
+		"-v", fmt.Sprintf("%s:%s", sshHostKeysDir, sshHostKeysMountPoint),
 	)
 	if uid := strings.TrimSpace(os.Getenv("CLOUD_CLI_PROXY_WORKER_UID")); uid != "" {
 		args = append(args, "-e", "CONTAINER_UID="+uid)
@@ -348,14 +352,28 @@ func (w *Worker) buildCreateArgs(request agentapi.HostActionRequest, containerNa
 }
 
 func workerHomeMount(request agentapi.HostActionRequest) string {
-	return firstNonEmpty(os.Getenv("CLOUD_CLI_PROXY_WORKER_HOME"), request.HomeMount, defaultWorkspaceMount)
+	if home := strings.TrimSpace(os.Getenv("CLOUD_CLI_PROXY_WORKER_HOME")); home != "" {
+		return home
+	}
+	if strings.TrimSpace(os.Getenv("CLOUD_CLI_PROXY_WORKER_USER")) != "" {
+		return "/home/" + workerContainerUser(request)
+	}
+	return firstNonEmpty(request.HomeMount, "/home/"+workerContainerUser(request))
+}
+
+func workerContainerUser(request agentapi.HostActionRequest) string {
+	return firstNonEmpty(os.Getenv("CLOUD_CLI_PROXY_WORKER_USER"), request.DefaultUser, defaultWorkerUser)
 }
 
 func (w *Worker) createHost(ctx context.Context, request agentapi.HostActionRequest) error {
 	homeDir := firstNonEmpty(request.HomeDir, hostHomeDir(request.HostID))
+	sshHostKeysDir := hostSSHHostKeysDir(request)
 	containerName := firstNonEmpty(request.ContainerName, containerNameForHost(request.HostID))
 	if err := os.MkdirAll(homeDir, 0o755); err != nil {
 		return fmt.Errorf("prepare host home dir %s: %w", homeDir, err)
+	}
+	if err := os.MkdirAll(sshHostKeysDir, 0o700); err != nil {
+		return fmt.Errorf("prepare host ssh host key dir %s: %w", sshHostKeysDir, err)
 	}
 
 	w.pullImage(ctx, request.TaskID, request.HostID, request.ImageName)
@@ -552,7 +570,7 @@ func (w *Worker) rebuildHost(ctx context.Context, request agentapi.HostActionReq
 		}
 	}
 
-	if request.RebuildMode == "wipe-/workspace" {
+	if request.RebuildMode == "wipe-home" {
 		if err := os.RemoveAll(firstNonEmpty(request.HomeDir, hostHomeDir(request.HostID))); err != nil {
 			return fmt.Errorf("factory reset host home: %w", err)
 		}
@@ -656,7 +674,7 @@ func (w *Worker) waitForSSH(ctx context.Context, request agentapi.HostActionRequ
 // syncContainerCredentials forces the container's Linux password to match
 // the request, regardless of what the entrypoint set via environment variables.
 func (w *Worker) syncContainerCredentials(ctx context.Context, request agentapi.HostActionRequest, containerName string) {
-	user := firstNonEmpty(os.Getenv("CLOUD_CLI_PROXY_WORKER_USER"), request.DefaultUser, "workspace")
+	user := workerContainerUser(request)
 	if request.EntryPassword == "" {
 		w.repo.RecordEvent(ctx, repository.RecordEventParams{
 			HostID:  &request.HostID,
@@ -693,7 +711,7 @@ func (w *Worker) injectSSHKeys(ctx context.Context, request agentapi.HostActionR
 	}
 
 	// 必须与容器内 CONTAINER_USER / entrypoint 一致；不能用平台用户名（request.Username）。
-	user := firstNonEmpty(os.Getenv("CLOUD_CLI_PROXY_WORKER_USER"), request.DefaultUser, "workspace")
+	user := workerContainerUser(request)
 	sshDir := workerHomeMount(request) + "/.ssh"
 
 	var managed []string
@@ -812,7 +830,7 @@ func (w *Worker) injectSSHKeys(ctx context.Context, request agentapi.HostActionR
 }
 
 func (w *Worker) injectSSHKeysLegacy(ctx context.Context, request agentapi.HostActionRequest, containerName string) {
-	user := firstNonEmpty(os.Getenv("CLOUD_CLI_PROXY_WORKER_USER"), request.DefaultUser, "workspace")
+	user := workerContainerUser(request)
 	sshDir := workerHomeMount(request) + "/.ssh"
 
 	if request.SSHPrivateKey != "" {
@@ -1210,6 +1228,15 @@ func (w *Worker) runDocker(ctx context.Context, args ...string) error {
 
 func hostHomeDir(hostID string) string {
 	return fmt.Sprintf("%s%s/home", defaultHostRoot, hostID)
+}
+
+func hostSSHHostKeysDir(request agentapi.HostActionRequest) string {
+	homeDir := firstNonEmpty(request.HomeDir, hostHomeDir(request.HostID))
+	clean := filepath.Clean(homeDir)
+	if filepath.Base(clean) == "home" {
+		return filepath.Join(filepath.Dir(clean), "ssh-host-keys")
+	}
+	return clean + "-ssh-host-keys"
 }
 
 func containerNameForHost(hostID string) string {

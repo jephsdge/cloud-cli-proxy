@@ -33,7 +33,7 @@ func TestConfig_Defaults(t *testing.T) {
 func TestConfig_SSHProxyDefaults(t *testing.T) {
 	cfg := Config{
 		SSHProxyAddr:              ":2222",
-		SSHProxyContainerUser:     "workspace",
+		SSHProxyContainerUser:     "work",
 		SSHProxyContainerPassword: "pass",
 		SSHProxyHostKeyPath:       "/etc/ssh/host_key",
 	}

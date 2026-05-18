@@ -27,7 +27,7 @@ func TestHostActionRequest_JSONMarshaling(t *testing.T) {
 		HostID:        "host-1",
 		Action:        ActionCreateHost,
 		ImageName:     "ghcr.io/test/managed-user:v1",
-		DefaultUser:   "workspace",
+		DefaultUser:   "work",
 		ContainerName: "user-alice",
 		MemoryLimitMB: 4096,
 		CPULimit:      2.0,

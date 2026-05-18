@@ -2,7 +2,7 @@
 set -euo pipefail
 
 export DISPLAY="${DISPLAY:-:99}"
-export HOME="${HOME:-/workspace}"
+export HOME="${HOME:-/home/${CONTAINER_USER:-work}}"
 chrome_user_data_dir="${CHROME_USER_DATA_DIR:-${HOME}/.chrome-data}"
 
 browser_cmd=""

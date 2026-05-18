@@ -41,10 +41,10 @@ func NewServer(addr, containerUser, containerPassword, hostKeyPath string, resol
 	}
 
 	if containerUser == "" {
-		containerUser = "workspace"
+		containerUser = "work"
 	}
 	if containerPassword == "" {
-		containerPassword = "workspace"
+		containerPassword = "work"
 		logger.Warn("SSH proxy using default container password — set CONTAINER_SSH_PASSWORD in production")
 	}
 

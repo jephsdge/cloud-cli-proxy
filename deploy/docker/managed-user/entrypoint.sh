@@ -1,17 +1,18 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-CONTAINER_USER="${CONTAINER_USER:-workspace}"
+CONTAINER_USER="${CONTAINER_USER:-work}"
 CONTAINER_UID="${CONTAINER_UID:-1000}"
 CONTAINER_GID="${CONTAINER_GID:-1000}"
-CONTAINER_HOME="${CONTAINER_HOME:-${HOME:-/workspace}}"
-CONTAINER_PASSWORD="${CONTAINER_SSH_PASSWORD:-workspace}"
+CONTAINER_HOME="${CONTAINER_HOME:-/home/${CONTAINER_USER}}"
+CONTAINER_PASSWORD="${CONTAINER_SSH_PASSWORD:-work}"
 
 RUN_USER="${CONTAINER_USER}"
 RUN_UID="${CONTAINER_UID}"
 RUN_GID="${CONTAINER_GID}"
 RUN_HOME="${CONTAINER_HOME}"
 export HOME="${RUN_HOME}"
+SSH_HOST_KEYS_DIR="${SSH_HOST_KEYS_DIR:-/etc/ssh/host-keys}"
 
 LOG_DIR="${RUN_HOME}/.vnc"
 XVNC_LOG="${LOG_DIR}/xvnc.log"
@@ -51,10 +52,13 @@ ensure_runtime_user() {
     groupdel ubuntu 2>/dev/null || true
   fi
 
-  if [ "${RUN_USER}" != "workspace" ] && id workspace >/dev/null 2>&1 && ! id "${RUN_USER}" >/dev/null 2>&1; then
-    usermod -l "${RUN_USER}" workspace
-    groupmod -n "${RUN_USER}" workspace 2>/dev/null || true
-  fi
+  for base_user in work workspace; do
+    if [ "${RUN_USER}" != "${base_user}" ] && id "${base_user}" >/dev/null 2>&1 && ! id "${RUN_USER}" >/dev/null 2>&1; then
+      usermod -l "${RUN_USER}" "${base_user}"
+      groupmod -n "${RUN_USER}" "${base_user}" 2>/dev/null || true
+      break
+    fi
+  done
 
   if ! getent group "${RUN_USER}" >/dev/null 2>&1; then
     groupadd -o -g "${RUN_GID}" "${RUN_USER}" 2>/dev/null || true
@@ -77,6 +81,69 @@ ensure_runtime_user() {
   # 只修正主目录和受控子目录本身，避免 bind mount 时递归改掉宿主机代码目录归属。
   chown "${RUN_UID}:${RUN_GID}" "${RUN_HOME}" "${RUN_HOME}/.ssh" 2>/dev/null || true
   chmod 0700 "${RUN_HOME}/.ssh"
+}
+
+ensure_home_skeleton() {
+  mkdir -p "${RUN_HOME}"
+
+  for file in .bash_logout .bashrc .profile; do
+    if [ ! -e "${RUN_HOME}/${file}" ] && [ -e "/etc/skel/${file}" ]; then
+      cp "/etc/skel/${file}" "${RUN_HOME}/${file}"
+    fi
+  done
+
+  chown "${RUN_UID}:${RUN_GID}" \
+    "${RUN_HOME}/.bash_logout" \
+    "${RUN_HOME}/.bashrc" \
+    "${RUN_HOME}/.profile" 2>/dev/null || true
+}
+
+cleanup_legacy_workspace_home() {
+  if mountpoint -q /workspace 2>/dev/null; then
+    echo "[entrypoint] /workspace is a mountpoint; keep it unchanged"
+    return
+  fi
+
+  # /workspace is the project directory. Older images used it as HOME; remove
+  # only known account skeleton files so it no longer looks like a user home.
+  mkdir -p /workspace
+  if [ -d /workspace ]; then
+    rm -f \
+      /workspace/.bash_logout \
+      /workspace/.bashrc \
+      /workspace/.profile \
+      /workspace/.npmrc
+    rm -rf \
+      /workspace/.npm \
+      /workspace/.ssh
+    chown "${RUN_UID}:${RUN_GID}" /workspace 2>/dev/null || true
+    chmod 0755 /workspace 2>/dev/null || true
+  fi
+}
+
+prepare_ssh_host_keys() {
+  mkdir -p /etc/ssh "${SSH_HOST_KEYS_DIR}"
+  chmod 0700 "${SSH_HOST_KEYS_DIR}" 2>/dev/null || true
+
+  if find "${SSH_HOST_KEYS_DIR}" -maxdepth 1 -type f -name 'ssh_host_*_key' | grep -q .; then
+    echo "[entrypoint] restoring ssh host keys from ${SSH_HOST_KEYS_DIR}"
+    for key_file in "${SSH_HOST_KEYS_DIR}"/ssh_host_*; do
+      [ -e "${key_file}" ] || continue
+      cp -a "${key_file}" /etc/ssh/
+    done
+  else
+    echo "[entrypoint] generating ssh host keys"
+    rm -f /etc/ssh/ssh_host_*
+    ssh-keygen -A
+    for key_file in /etc/ssh/ssh_host_*; do
+      [ -e "${key_file}" ] || continue
+      cp -a "${key_file}" "${SSH_HOST_KEYS_DIR}/"
+    done
+  fi
+
+  chown root:root /etc/ssh/ssh_host_* "${SSH_HOST_KEYS_DIR}"/ssh_host_* 2>/dev/null || true
+  chmod 0600 /etc/ssh/ssh_host_*_key "${SSH_HOST_KEYS_DIR}"/ssh_host_*_key 2>/dev/null || true
+  chmod 0644 /etc/ssh/ssh_host_*_key.pub "${SSH_HOST_KEYS_DIR}"/ssh_host_*_key.pub 2>/dev/null || true
 }
 
 write_desktop_config() {
@@ -236,12 +303,12 @@ assert_tmux_version() {
 
 prepare_timezone
 ensure_runtime_user
+ensure_home_skeleton
+cleanup_legacy_workspace_home
 
 # SSH setup
 mkdir -p /var/run/sshd
-if ! ls /etc/ssh/ssh_host_*_key >/dev/null 2>&1; then
-  ssh-keygen -A
-fi
+prepare_ssh_host_keys
 
 # 注入 SSH 公钥（local 模式或显式传入时）
 if [ -n "${CONTAINER_SSH_AUTHORIZED_KEY:-}" ]; then
@@ -252,7 +319,7 @@ fi
 
 echo "${RUN_USER}:${CONTAINER_PASSWORD}" | chpasswd
 
-# Phase 29.1: 验证密码已被成功设置，避免"密码退化为 workspace"的静默失败复现。
+# Phase 29.1: 验证密码已被成功设置，避免密码退化到默认值的静默失败复现。
 # passwd -S 第 2 列语义：P / PS = 已设置密码；L / LK = 已锁定；NP = 无密码；UNSET = 读取失败。
 status="$(passwd -S "${RUN_USER}" 2>/dev/null | awk '{print $2}' || echo UNSET)"
 case "$status" in

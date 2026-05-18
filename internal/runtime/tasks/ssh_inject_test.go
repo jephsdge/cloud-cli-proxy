@@ -159,10 +159,10 @@ func TestInjectSSHKeys(t *testing.T) {
 
 		w.injectSSHKeys(context.Background(), req, "c1")
 
-		if got := fc.files["/workspace/.ssh/id_ed25519"]; got != "OUTBOUND_PRIV" {
+		if got := fc.files["/home/work/.ssh/id_ed25519"]; got != "OUTBOUND_PRIV" {
 			t.Fatalf("id_ed25519 = %q, want %q", got, "OUTBOUND_PRIV")
 		}
-		if got := fc.files["/workspace/.ssh/id_ed25519.pub"]; got != "ssh-ed25519 OUTBOUND_PUB" {
+		if got := fc.files["/home/work/.ssh/id_ed25519.pub"]; got != "ssh-ed25519 OUTBOUND_PUB" {
 			t.Fatalf("id_ed25519.pub = %q, want %q", got, "ssh-ed25519 OUTBOUND_PUB")
 		}
 		if hasEventType(repo.events, "runtime.ssh_key_skipped_existing") {
@@ -172,7 +172,7 @@ func TestInjectSSHKeys(t *testing.T) {
 
 	t.Run("existing_outbound_is_preserved", func(t *testing.T) {
 		w, fc, repo := setupInjectTest(t, "")
-		fc.files["/workspace/.ssh/id_ed25519"] = "USER-GENERATED-PRIV"
+		fc.files["/home/work/.ssh/id_ed25519"] = "USER-GENERATED-PRIV"
 
 		req := agentapi.HostActionRequest{
 			HostID: "h1",
@@ -187,11 +187,11 @@ func TestInjectSSHKeys(t *testing.T) {
 
 		w.injectSSHKeys(context.Background(), req, "c1")
 
-		if got := fc.files["/workspace/.ssh/id_ed25519"]; got != "USER-GENERATED-PRIV" {
+		if got := fc.files["/home/work/.ssh/id_ed25519"]; got != "USER-GENERATED-PRIV" {
 			t.Fatalf("id_ed25519 overwritten: %q, want %q", got, "USER-GENERATED-PRIV")
 		}
-		if !hasEventWithFile(repo.events, "runtime.ssh_key_skipped_existing", "/workspace/.ssh/id_ed25519") {
-			t.Errorf("expected ssh_key_skipped_existing event for /workspace/.ssh/id_ed25519, events=%+v", repo.events)
+		if !hasEventWithFile(repo.events, "runtime.ssh_key_skipped_existing", "/home/work/.ssh/id_ed25519") {
+			t.Errorf("expected ssh_key_skipped_existing event for /home/work/.ssh/id_ed25519, events=%+v", repo.events)
 		}
 	})
 
@@ -209,7 +209,7 @@ func TestInjectSSHKeys(t *testing.T) {
 
 		w.injectSSHKeys(context.Background(), req, "c1")
 
-		content, ok := fc.files["/workspace/.ssh/authorized_keys"]
+		content, ok := fc.files["/home/work/.ssh/authorized_keys"]
 		if !ok {
 			t.Fatalf("authorized_keys not written, files=%v", fc.files)
 		}
@@ -246,7 +246,7 @@ func TestInjectSSHKeys(t *testing.T) {
 		proxyPub := "ssh-ed25519 PROXY_PUB"
 		w, fc, _ := setupInjectTest(t, proxyPub)
 
-		fc.files["/workspace/.ssh/authorized_keys"] = strings.Join([]string{
+		fc.files["/home/work/.ssh/authorized_keys"] = strings.Join([]string{
 			"ssh-ed25519 USERLINE1",
 			sshManagedBeginMarker,
 			"ssh-ed25519 OLDMANAGED",
@@ -265,7 +265,7 @@ func TestInjectSSHKeys(t *testing.T) {
 
 		w.injectSSHKeys(context.Background(), req, "c1")
 
-		content := fc.files["/workspace/.ssh/authorized_keys"]
+		content := fc.files["/home/work/.ssh/authorized_keys"]
 		lines := strings.Split(content, "\n")
 
 		if !containsLine(lines, "ssh-ed25519 USERLINE1") {
@@ -297,7 +297,7 @@ func TestInjectSSHKeys(t *testing.T) {
 		proxyPub := "ssh-ed25519 PROXY_PUB"
 		w, fc, repo := setupInjectTest(t, proxyPub)
 
-		fc.files["/workspace/.ssh/authorized_keys"] = strings.Join([]string{
+		fc.files["/home/work/.ssh/authorized_keys"] = strings.Join([]string{
 			"ssh-ed25519 USERLINE1",
 			sshManagedBeginMarker,
 			"ssh-ed25519 OLDMANAGED",
@@ -314,12 +314,12 @@ func TestInjectSSHKeys(t *testing.T) {
 		}
 
 		w.injectSSHKeys(context.Background(), req, "c1")
-		first := fc.files["/workspace/.ssh/authorized_keys"]
+		first := fc.files["/home/work/.ssh/authorized_keys"]
 
 		// 第二次调用同样的 request，期望字节级不变
 		repo.events = nil
 		w.injectSSHKeys(context.Background(), req, "c1")
-		second := fc.files["/workspace/.ssh/authorized_keys"]
+		second := fc.files["/home/work/.ssh/authorized_keys"]
 
 		if first != second {
 			t.Fatalf("authorized_keys drifted on second call:\nfirst:\n%s\nsecond:\n%s", first, second)

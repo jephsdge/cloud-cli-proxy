@@ -29,13 +29,13 @@ func TestSSHDoctor(t *testing.T) {
 
 	t.Run("expected_mode", func(t *testing.T) {
 		cases := map[string]string{
-			"private":          "0600",
-			"authorized_keys":  "0600",
-			"known_hosts":      "0600",
-			"config":           "0600",
-			"public":           "0644",
-			"other":            "",
-			"":                 "",
+			"private":         "0600",
+			"authorized_keys": "0600",
+			"known_hosts":     "0600",
+			"config":          "0600",
+			"public":          "0644",
+			"other":           "",
+			"":                "",
 		}
 		for kind, want := range cases {
 			if got := expectedMode(kind); got != want {
@@ -78,20 +78,20 @@ func TestSSHDoctor(t *testing.T) {
 
 	t.Run("parse_scan_output", func(t *testing.T) {
 		raw := strings.Join([]string{
-			"USER=workspace",
+			"USER=work",
 			"SUDO_OK=y",
-			"FILE|id_ed25519|workspace:workspace|600|-----BEGIN OPENSSH PRIVATE KEY-----|0a",
-			"FILE|id_ed25519.pub|workspace:workspace|644|ssh-ed25519 AAAA|0a",
+			"FILE|id_ed25519|work:work|600|-----BEGIN OPENSSH PRIVATE KEY-----|0a",
+			"FILE|id_ed25519.pub|work:work|644|ssh-ed25519 AAAA|0a",
 			"FILE|vision|root:root|600|-----BEGIN OPENSSH PRIVATE KEY-----|3d",
-			"FILE|authorized_keys|workspace:workspace|644|# >>> managed >>>|0a",
-			"FILE|config|workspace:workspace|644|Host gitlab.zaneliu.me|0a",
+			"FILE|authorized_keys|work:work|644|# >>> managed >>>|0a",
+			"FILE|config|work:work|644|Host gitlab.zaneliu.me|0a",
 			"",
 		}, "\n")
 
 		r := parseScanOutput(raw)
 
-		if r.User != "workspace" {
-			t.Fatalf("User = %q, want workspace", r.User)
+		if r.User != "work" {
+			t.Fatalf("User = %q, want work", r.User)
 		}
 		if !r.SudoOK {
 			t.Errorf("SudoOK = false, want true")
@@ -141,7 +141,7 @@ func TestSSHDoctor(t *testing.T) {
 			t.Errorf("vision kind = %q, want private", vision.Kind)
 		}
 		if vision.OwnerOK {
-			t.Errorf("vision OwnerOK = true, want false (root != workspace)")
+			t.Errorf("vision OwnerOK = true, want false (root != work)")
 		}
 		if !vision.ModeOK {
 			t.Errorf("vision ModeOK = false (mode=%s), want true (0600 满足 private)", vision.Mode)
@@ -170,7 +170,7 @@ func TestSSHDoctor(t *testing.T) {
 	})
 
 	t.Run("parse_handles_missing_dir", func(t *testing.T) {
-		raw := "USER=workspace\nSUDO_OK=n\nSSHDIR_MISSING=/workspace/.ssh\n"
+		raw := "USER=work\nSUDO_OK=n\nSSHDIR_MISSING=/home/work/.ssh\n"
 		r := parseScanOutput(raw)
 		if !r.Missing {
 			t.Errorf("Missing = false, want true")

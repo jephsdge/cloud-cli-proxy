@@ -267,7 +267,7 @@ export function ClaudeSettingsDialog({
         <DialogHeader>
           <DialogTitle>Claude Code 配置</DialogTitle>
           <DialogDescription>
-            编辑容器内的 <code className="text-xs">/workspace/.claude/settings.json</code>
+            编辑 worker HOME 下的 <code className="text-xs">.claude/settings.json</code>
           </DialogDescription>
         </DialogHeader>
 

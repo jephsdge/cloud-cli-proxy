@@ -603,12 +603,17 @@ func (h *AdminHostsHandler) ExportConfig() nethttp.Handler {
 		}
 
 		containerName := "cloudproxy-" + hostID
+		homePath := configuredWorkerHome()
+		homeArchiveRoot := strings.TrimLeft(homePath, "/")
 		ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
 		defer cancel()
 
 		cmd := exec.CommandContext(ctx, "docker", "exec", "-i", containerName,
 			"tar", "czf", "-",
-			"-C", "/workspace", ".claude", ".claude.json", ".chrome-data",
+			"-C", "/",
+			homeArchiveRoot+"/.claude",
+			homeArchiveRoot+"/.claude.json",
+			homeArchiveRoot+"/.chrome-data",
 			"-C", "/var/lib/claude-persist", ".", ".cache")
 
 		w.Header().Set("Content-Type", "application/gzip")
@@ -744,11 +749,12 @@ func (h *AdminHostsHandler) GetClaudeSettings() nethttp.Handler {
 		}
 
 		containerName := "cloudproxy-" + hostID
+		settingsPath := workerStatePath(".claude/settings.json")
 		ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 		defer cancel()
 
 		cmd := exec.CommandContext(ctx, "docker", "exec", "-i", containerName,
-			"cat", "/workspace/.claude/settings.json")
+			"cat", settingsPath)
 		output, err := cmd.CombinedOutput()
 		if err != nil {
 			writeJSON(w, nethttp.StatusOK, map[string]any{"settings": map[string]any{}})
@@ -793,11 +799,13 @@ func (h *AdminHostsHandler) UpdateClaudeSettings() nethttp.Handler {
 		}
 
 		containerName := "cloudproxy-" + hostID
+		claudeDir := workerStatePath(".claude")
+		settingsPath := workerStatePath(".claude/settings.json")
 		ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 		defer cancel()
 
 		mkdirCmd := exec.CommandContext(ctx, "docker", "exec", "-i", containerName,
-			"mkdir", "-p", "/workspace/.claude")
+			"mkdir", "-p", claudeDir)
 		if out, err := mkdirCmd.CombinedOutput(); err != nil {
 			h.logger.Error("mkdir .claude failed", "host_id", hostID, "error", err, "output", string(out))
 			writeJSON(w, nethttp.StatusBadGateway, map[string]string{"error": "prepare directory failed"})
@@ -806,7 +814,7 @@ func (h *AdminHostsHandler) UpdateClaudeSettings() nethttp.Handler {
 
 		prettySettings, _ := json.MarshalIndent(json.RawMessage(body.Settings), "", "  ")
 		teeCmd := exec.CommandContext(ctx, "docker", "exec", "-i", containerName,
-			"tee", "/workspace/.claude/settings.json")
+			"tee", settingsPath)
 		teeCmd.Stdin = bytes.NewReader(prettySettings)
 		if out, err := teeCmd.CombinedOutput(); err != nil {
 			h.logger.Error("write claude settings failed", "host_id", hostID, "error", err, "output", string(out))
@@ -850,10 +858,16 @@ func (h *AdminHostsHandler) GetClaudeInfo() nethttp.Handler {
 		}
 
 		containerName := "cloudproxy-" + hostID
+		claudeJSONPath := workerStatePath(".claude.json")
+		settingsPath := workerStatePath(".claude/settings.json")
 		ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 		defer cancel()
 
-		script := `echo '===CLAUDE_JSON===' && cat /workspace/.claude.json 2>/dev/null || echo '{}' && echo '===PROJECT_SETTINGS===' && cat /workspace/.claude/settings.json 2>/dev/null || echo '{}' && echo '===UNAME===' && uname -a 2>/dev/null || echo 'unknown' && echo '===HOSTNAME===' && hostname 2>/dev/null || echo 'unknown' && echo '===NODE===' && node --version 2>/dev/null || echo 'unknown'`
+		script := fmt.Sprintf(
+			`echo '===CLAUDE_JSON===' && cat %q 2>/dev/null || echo '{}' && echo '===PROJECT_SETTINGS===' && cat %q 2>/dev/null || echo '{}' && echo '===UNAME===' && uname -a 2>/dev/null || echo 'unknown' && echo '===HOSTNAME===' && hostname 2>/dev/null || echo 'unknown' && echo '===NODE===' && node --version 2>/dev/null || echo 'unknown'`,
+			claudeJSONPath,
+			settingsPath,
+		)
 		cmd := exec.CommandContext(ctx, "docker", "exec", "-i", containerName, "bash", "-c", script)
 		output, err := cmd.CombinedOutput()
 		if err != nil {

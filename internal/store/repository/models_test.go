@@ -137,7 +137,7 @@ func TestHostSSHAuth_Fields(t *testing.T) {
 		UserID:           "u1",
 		UserStatus:       "active",
 		Username:         "alice",
-		ContainerUser:    "workspace",
+		ContainerUser:    "work",
 		TemplateImageRef: "img:v1",
 		SSHPrivateKey:    "-----BEGIN OPENSSH PRIVATE KEY-----\nkey\n-----END OPENSSH PRIVATE KEY-----",
 	}

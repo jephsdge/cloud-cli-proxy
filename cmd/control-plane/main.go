@@ -24,8 +24,8 @@ func main() {
 		AdminJWTSecret: os.Getenv("ADMIN_JWT_SECRET"),
 
 		SSHProxyAddr:              envOrDefault("SSH_PROXY_ADDR", ":2222"),
-		SSHProxyContainerUser:     envOrDefault("SSH_PROXY_CONTAINER_USER", envOrDefault("CLOUD_CLI_PROXY_WORKER_USER", "workspace")),
-		SSHProxyContainerPassword: envOrDefault("SSH_PROXY_CONTAINER_PASSWORD", "workspace"),
+		SSHProxyContainerUser:     envOrDefault("SSH_PROXY_CONTAINER_USER", envOrDefault("CLOUD_CLI_PROXY_WORKER_USER", "work")),
+		SSHProxyContainerPassword: envOrDefault("SSH_PROXY_CONTAINER_PASSWORD", "work"),
 		SSHProxyHostKeyPath:       envOrDefault("SSH_PROXY_HOST_KEY_PATH", "/var/lib/cloud-cli-proxy/ssh_host_ed25519_key"),
 	}
 

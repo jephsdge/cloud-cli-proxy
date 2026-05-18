@@ -5,14 +5,14 @@ if [ "${EUID:-$(id -u)}" -ne 0 ]; then
   exec sudo -n /usr/local/bin/restart-vnc "$@"
 fi
 
-RUN_USER="${CONTAINER_USER:-workspace}"
+RUN_USER="${CONTAINER_USER:-work}"
 if ! id "${RUN_USER}" >/dev/null 2>&1; then
-  RUN_USER="workspace"
+  RUN_USER="work"
 fi
 RUN_UID="$(id -u "${RUN_USER}")"
 RUN_GID="$(id -g "${RUN_USER}")"
 RUN_HOME="${CONTAINER_HOME:-$(getent passwd "${RUN_USER}" | cut -d: -f6)}"
-RUN_HOME="${RUN_HOME:-/workspace}"
+RUN_HOME="${RUN_HOME:-/home/${RUN_USER}}"
 
 LOG_DIR="${RUN_HOME}/.vnc"
 XVNC_LOG="${LOG_DIR}/xvnc.log"
