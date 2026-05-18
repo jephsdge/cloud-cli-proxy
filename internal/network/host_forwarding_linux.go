@@ -38,15 +38,16 @@ func ensureHostMasquerade(ctx context.Context) error {
 	})
 }
 
-// setupPortForwarding creates host iptables rules for port mapping and worker routing.
+// setupPortForwarding creates host iptables rules for worker routing, and starts
+// Go userland TCP proxies for host port mapping.
 //
 // Architecture:
 //   - Worker's default gateway points to the host's bridge IP (10.99.X.1).
 //   - All worker outbound traffic reaches the host first.
 //   - Host policy-routes worker subnet traffic to the gateway (10.99.X.2) -> sing-box tunnel.
-//   - Port-mapped inbound traffic is DNAT'd to worker, then SNAT'd so the worker replies
-//     directly to the host (same subnet) instead of routing through the gateway where
-//     sing-box auto_route would hijack the reply into the proxy tunnel.
+//   - Port-mapped inbound traffic is handled by Go TCP proxies:
+//     each proxy listens in the host netns and forwards to the worker isolated IP,
+//     avoiding kernel-specific nat:PREROUTING behavior for locally-destined traffic.
 func setupPortForwarding(ctx context.Context, hostID, bridgeGW, gwIP string, ports []agentapi.PortMapping) error {
 	third := subnetThirdOctet(hostID)
 	workerIP := fmt.Sprintf("10.99.%d.3", third)
@@ -56,6 +57,9 @@ func setupPortForwarding(ctx context.Context, hostID, bridgeGW, gwIP string, por
 	if err := ensureHostPortMapChains(ctx, hostChain); err != nil {
 		return err
 	}
+	if err := flushHostPortMapChains(ctx, hostChain); err != nil {
+		return err
+	}
 
 	// Remove rules left by older versions where per-host rules lived directly
 	// in CLOUDPROXY-PORTMAP. New rules are isolated in the per-host chain.
@@ -63,7 +67,10 @@ func setupPortForwarding(ctx context.Context, hostID, bridgeGW, gwIP string, por
 	deleteRulesByNeedle(ctx, "filter", portMapChain, workerIP)
 	deleteRulesByNeedle(ctx, "filter", portMapChain, subnet)
 
-	// --- PREROUTING chain (nat): DNAT for port mapping ---
+	// Port forwarding is handled by a Go userland proxy. iptables DNAT/SNAT
+	// rules from older builds are removed above/below; only FORWARD allow rules
+	// remain so control-plane can reach worker isolated IPs.
+	deleteNatRulesByComment(ctx, "cloudproxy-snat-"+hostID)
 	for _, pm := range ports {
 		if pm.HostPort <= 0 || pm.ContainerPort <= 0 {
 			continue
@@ -74,31 +81,9 @@ func setupPortForwarding(ctx context.Context, hostID, bridgeGW, gwIP string, por
 			proto = "tcp"
 		}
 
-		hp := strconv.Itoa(pm.HostPort)
 		cp := strconv.Itoa(pm.ContainerPort)
 
-		// DNAT: external:hostPort -> worker:containerPort
-		dnatRule := []string{
-			"-p", proto, "--dport", hp,
-			"-j", "DNAT", "--to-destination", workerIP + ":" + cp,
-		}
-		if err := appendUniqueRule(ctx, "nat", hostChain, dnatRule); err != nil {
-			return fmt.Errorf("iptables DNAT %d->%s:%d: %w", pm.HostPort, workerIP, pm.ContainerPort, err)
-		}
-
-		// SNAT: change source IP to bridgeGW so worker replies directly to host
-		// instead of routing through gateway where sing-box would hijack it.
-		snatRule := []string{
-			"-p", proto,
-			"-d", workerIP, "--dport", cp,
-			"-m", "comment", "--comment", "cloudproxy-snat-" + hostID,
-			"-j", "SNAT", "--to-source", bridgeGW,
-		}
-		if err := appendUniqueRule(ctx, "nat", "POSTROUTING", snatRule); err != nil {
-			return fmt.Errorf("iptables SNAT %s:%d: %w", workerIP, pm.ContainerPort, err)
-		}
-
-		// FORWARD ACCEPT for port-mapped inbound traffic
+		// Allow control-plane/userland proxy traffic to worker isolated IP.
 		fwdRule := []string{
 			"-p", proto, "--dport", cp,
 			"-d", workerIP,
@@ -127,6 +112,10 @@ func setupPortForwarding(ctx context.Context, hostID, bridgeGW, gwIP string, por
 	}
 	if out, err := runHostNetnsCommand(ctx, "ip", "route", "replace", "default", "via", gwIP, "table", tableID); err != nil {
 		return fmt.Errorf("replace policy route table %s via %s: %w (%s)", tableID, gwIP, err, out)
+	}
+
+	if err := startPortForwarders(hostID, workerIP, ports); err != nil {
+		return fmt.Errorf("start port forwarders: %w", err)
 	}
 
 	return nil
@@ -164,6 +153,16 @@ func ensureHostPortMapChains(ctx context.Context, hostChain string) error {
 	return nil
 }
 
+func flushHostPortMapChains(ctx context.Context, hostChain string) error {
+	if out, err := runHostNetnsCommand(ctx, "iptables", "-t", "nat", "-F", hostChain); err != nil {
+		return fmt.Errorf("flush nat/%s: %w (%s)", hostChain, err, out)
+	}
+	if out, err := runHostNetnsCommand(ctx, "iptables", "-F", hostChain); err != nil {
+		return fmt.Errorf("flush filter/%s: %w (%s)", hostChain, err, out)
+	}
+	return nil
+}
+
 func ensureChainHook(ctx context.Context, table, parent, child string) error {
 	checkArgs := iptablesArgs(table, "-C", parent, "-j", child)
 	if hostNetnsCommand(ctx, "iptables", checkArgs...).Run() == nil {
@@ -177,10 +176,12 @@ func ensureChainHook(ctx context.Context, table, parent, child string) error {
 	return nil
 }
 
-// teardownPortForwarding removes only this host's jump rules, per-host chains,
-// SNAT rules, and policy routes. The shared CLOUDPROXY-PORTMAP hook remains
-// installed because other hosts may still be using it.
+// teardownPortForwarding removes this host's listeners, jump rules, per-host
+// chains, legacy SNAT rules, and policy routes. The shared CLOUDPROXY-PORTMAP
+// hook remains installed because other hosts may still be using it.
 func teardownPortForwarding(ctx context.Context, hostID string) {
+	stopPortForwarders(hostID)
+
 	third := subnetThirdOctet(hostID)
 	gwIP := fmt.Sprintf("10.99.%d.2", third)
 	workerIP := fmt.Sprintf("10.99.%d.3", third)

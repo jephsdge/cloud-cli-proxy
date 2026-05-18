@@ -331,8 +331,8 @@ func (w *Worker) buildCreateArgs(request agentapi.HostActionRequest, containerNa
 		if pm.HostPort <= 0 || pm.HostPort > 65535 || pm.ContainerPort <= 0 || pm.ContainerPort > 65535 {
 			return nil, fmt.Errorf("invalid port mapping: host=%d container=%d", pm.HostPort, pm.ContainerPort)
 		}
-		// Linux: 跳过 Docker -p，端口映射由 ContainerProxyProvider 通过宿主机 iptables DNAT
-		// 转发到隔离网络 IP 实现（bridge 已断开以防 IP 泄漏，Docker -p 依赖 bridge）。
+		// Linux: 跳过 Docker -p，端口映射由 ContainerProxyProvider 内嵌的 Go TCP proxy
+		// 在 host netns 监听后转发到隔离网络 IP（bridge 已断开以防 IP 泄漏）。
 		// 非 Linux: 使用 Docker -p，Docker Desktop 通过 vpnkit 在任意网络上工作。
 		if runtime.GOOS != "linux" {
 			portSpec := fmt.Sprintf("%d:%d", pm.HostPort, pm.ContainerPort)

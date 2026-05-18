@@ -30,5 +30,5 @@ type HostNetworkSpec struct {
 	HostID       string
 	ContainerPID uint32                 // container init PID, populated after docker start
 	Egress       *EgressConfig          // nil when Provider should skip network setup
-	PortMappings []agentapi.PortMapping // host port forwarding (used by iptables DNAT on Linux)
+	PortMappings []agentapi.PortMapping // host port forwarding (Go userland proxy on Linux, Docker -p on others)
 }

@@ -126,7 +126,7 @@ func (p *ContainerProxyProvider) PrepareHost(ctx context.Context, spec HostNetwo
 
 	// 所有平台统一断开 Worker 的 bridge 网络，防止 restart 后 default route 被 bridge 覆盖。
 	// 这是防 IP 泄漏的关键机制：不断开 bridge 则容器内流量可通过 bridge 直接出网。
-	// Linux 端口映射通过宿主机 iptables DNAT 到隔离网络 IP 实现（见 setupPortForwarding）。
+	// Linux 端口映射由 Go userland proxy 在 host netns 监听后转发到隔离网络 IP。
 	_ = exec.CommandContext(ctx, "docker", "network", "disconnect", "-f", "bridge", workerName).Run()
 
 	// 等待隔离网络的接口就绪（disconnect 后可能有短暂延迟）
@@ -134,7 +134,7 @@ func (p *ContainerProxyProvider) PrepareHost(ctx context.Context, spec HostNetwo
 
 	// Linux: 默认路由指向宿主机 bridge IP，由宿主机做路由决策。
 	//   - 一般出站流量（DNS/HTTP等）→ 策略路由 → gateway → sing-box 代理隧道
-	//   - 端口映射回复 → SNAT 后 worker 直接回复给宿主机，避免被 sing-box 劫持
+	//   - 端口映射入站 → userland proxy → 直连 worker 隔离 IP
 	// macOS: 默认路由指向 gateway 容器，Docker Desktop vpnkit 处理端口映射。
 	defaultGW := bridgeGW
 	if runtime.GOOS != "linux" {
@@ -145,10 +145,21 @@ func (p *ContainerProxyProvider) PrepareHost(ctx context.Context, spec HostNetwo
 		return fmt.Errorf("gateway: configure worker routes/DNS: %w", err)
 	}
 
+	if cpID, _ := os.Hostname(); cpID != "" {
+		if err := dockerNetworkConnect(ctx, netName, cpID, ""); err != nil {
+			if len(spec.PortMappings) > 0 {
+				p.teardownGateway(ctx, hostID)
+				return fmt.Errorf("gateway: connect control-plane to isolated network for port forwarding: %w", err)
+			}
+			p.logger.Warn("container-proxy: connect control-plane to isolated network failed (VNC may not work)",
+				"host_id", hostID, "error", err)
+		}
+	}
+
 	// 宿主机 iptables / policy routing 规则。
 	// 策略路由必须始终安装：worker 默认网关指向宿主机 bridge IP，
 	// 若没有对应策略路由，新建连接会直接从宿主机出网而绕过 gateway。
-	// 端口映射 DNAT/SNAT 仅在 spec.PortMappings 非空时由 setupPortForwarding 添加。
+	// 端口映射由 setupPortForwarding 内部的 userland proxy 处理。
 	if err := ensurePortMapChain(ctx); err != nil {
 		p.teardownGateway(ctx, hostID)
 		return fmt.Errorf("gateway: setup portmap chain: %w", err)
@@ -156,13 +167,6 @@ func (p *ContainerProxyProvider) PrepareHost(ctx context.Context, spec HostNetwo
 	if err := setupPortForwarding(ctx, hostID, bridgeGW, gwIP, spec.PortMappings); err != nil {
 		p.teardownGateway(ctx, hostID)
 		return fmt.Errorf("gateway: setup port forwarding: %w", err)
-	}
-
-	if cpID, _ := os.Hostname(); cpID != "" {
-		if err := dockerNetworkConnect(ctx, netName, cpID, ""); err != nil {
-			p.logger.Warn("container-proxy: connect control-plane to isolated network failed (VNC may not work)",
-				"host_id", hostID, "error", err)
-		}
 	}
 
 	p.logger.Info("container-proxy: sidecar gateway ready",
@@ -378,7 +382,11 @@ func dockerNetworkConnect(ctx context.Context, netName, containerName, staticIP 
 	cmd := exec.CommandContext(ctx, "docker", args...)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
-		return fmt.Errorf("docker network connect: %s: %w", strings.TrimSpace(string(out)), err)
+		msg := strings.TrimSpace(string(out))
+		if strings.Contains(msg, "already exists") || strings.Contains(msg, "is already connected") {
+			return nil
+		}
+		return fmt.Errorf("docker network connect: %s: %w", msg, err)
 	}
 	return nil
 }
