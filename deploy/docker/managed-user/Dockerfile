@@ -6,6 +6,7 @@ ENV HOME=/workspace
 ENV WORKSPACE_USER=workspace
 ENV WORKSPACE_UID=1000
 ENV WORKSPACE_GID=1000
+ARG CLOUD_CLI_PROXY_WORKER_EXTRA_APT_PACKAGES=""
 
 # 启用 BuildKit apt cache mount（必须先移除 docker-clean，否则 cache 会被自动清空）
 # 参考：https://docs.docker.com/build/cache/optimize (D-03, M18 防御)
@@ -20,10 +21,14 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
         openssh-server \
         bash \
         zsh \
+        vim \
         curl \
         git \
         nodejs \
         npm \
+        python3 \
+        python3-venv \
+        python3-pip \
         tmux \
         sudo \
         ca-certificates \
@@ -48,6 +53,11 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
         sshfs \
         fuse3 \
         tini \
+    && if [ -n "${CLOUD_CLI_PROXY_WORKER_EXTRA_APT_PACKAGES}" ]; then \
+        apt-get install -y --no-install-recommends ${CLOUD_CLI_PROXY_WORKER_EXTRA_APT_PACKAGES}; \
+       fi \
+    && mkdir -p /etc/cloud-claude \
+    && printf '%s\n' "${CLOUD_CLI_PROXY_WORKER_EXTRA_APT_PACKAGES}" > /etc/cloud-claude/worker-extra-apt-packages \
     && rm -rf /var/lib/apt/lists/*
 
 RUN sed -i 's/^#user_allow_other/user_allow_other/' /etc/fuse.conf \
@@ -153,9 +163,10 @@ COPY deploy/docker/managed-user/profile.d-cloud-claude.sh /etc/profile.d/cloud-c
 COPY deploy/docker/managed-user/entrypoint.sh /usr/local/bin/entrypoint.sh
 COPY deploy/docker/managed-user/launch-chromium.sh /usr/local/bin/launch-chromium.sh
 COPY deploy/docker/managed-user/restart-vnc.sh /usr/local/bin/restart-vnc
+COPY deploy/docker/managed-user/ll /usr/local/bin/ll
 
 RUN chmod 0644 /etc/tmux.conf /etc/profile.d/cloud-claude.sh
-RUN chmod +x /usr/local/bin/entrypoint.sh /usr/local/bin/launch-chromium.sh /usr/local/bin/restart-vnc
+RUN chmod +x /usr/local/bin/entrypoint.sh /usr/local/bin/launch-chromium.sh /usr/local/bin/restart-vnc /usr/local/bin/ll
 
 WORKDIR /workspace
 

@@ -9,8 +9,12 @@ RUN_USER="${CONTAINER_USER:-workspace}"
 if ! id "${RUN_USER}" >/dev/null 2>&1; then
   RUN_USER="workspace"
 fi
+RUN_UID="$(id -u "${RUN_USER}")"
+RUN_GID="$(id -g "${RUN_USER}")"
+RUN_HOME="${CONTAINER_HOME:-$(getent passwd "${RUN_USER}" | cut -d: -f6)}"
+RUN_HOME="${RUN_HOME:-/workspace}"
 
-LOG_DIR=/workspace/.vnc
+LOG_DIR="${RUN_HOME}/.vnc"
 XVNC_LOG="${LOG_DIR}/xvnc.log"
 FLUXBOX_LOG="${LOG_DIR}/fluxbox.log"
 DESKTOP_LOG="${LOG_DIR}/desktop.log"
@@ -22,7 +26,7 @@ fi
 mkdir -p "${LOG_DIR}" /tmp/.X11-unix
 chmod 1777 /tmp/.X11-unix
 touch "${XVNC_LOG}" "${FLUXBOX_LOG}" "${DESKTOP_LOG}"
-chown -R "${RUN_USER}:${RUN_USER}" "${LOG_DIR}"
+chown -R "${RUN_UID}:${RUN_GID}" "${LOG_DIR}"
 
 pkill -f 'Xvnc :99' || true
 pkill -u "${RUN_USER}" -x fluxbox || true
@@ -58,6 +62,6 @@ fi
 
 su "${RUN_USER}" -c 'DISPLAY=:99 xsetroot -solid "#17324d"' >/dev/null 2>&1 || true
 su "${RUN_USER}" -c 'DISPLAY=:99 fluxbox' >>"${FLUXBOX_LOG}" 2>&1 &
-su "${RUN_USER}" -c 'DISPLAY=:99 HOME=/workspace pcmanfm --desktop --profile default' >>"${DESKTOP_LOG}" 2>&1 &
+su "${RUN_USER}" -c "DISPLAY=:99 HOME=${RUN_HOME@Q} pcmanfm --desktop --profile default" >>"${DESKTOP_LOG}" 2>&1 &
 
 echo "VNC restarted (display=:99 websocket=6080 user=${RUN_USER})"

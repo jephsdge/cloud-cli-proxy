@@ -188,6 +188,33 @@ func TestBuildCreateArgs_EmptyVolumes_NoExtraArgs(t *testing.T) {
 	}
 }
 
+func TestBuildCreateArgs_WorkerIdentityEnv(t *testing.T) {
+	t.Setenv("CLOUD_CLI_PROXY_WORKER_USER", "work")
+	t.Setenv("CLOUD_CLI_PROXY_WORKER_UID", "1008")
+	t.Setenv("CLOUD_CLI_PROXY_WORKER_GID", "1008")
+	t.Setenv("CLOUD_CLI_PROXY_WORKER_HOME", "/home/work")
+
+	w := &Worker{}
+	req := minimalCreateHostRequest("identity")
+	args, err := w.buildCreateArgs(req, "cloudproxy-identity", "cloudproxy-identity")
+	if err != nil {
+		t.Fatalf("buildCreateArgs: %v", err)
+	}
+	joined := strings.Join(args, " ")
+	for _, want := range []string{
+		"CONTAINER_USER=work",
+		"CONTAINER_UID=1008",
+		"CONTAINER_GID=1008",
+		"CONTAINER_HOME=/home/work",
+		"HOME=/home/work",
+		"/tmp/cloudproxy-test-home-identity:/home/work",
+	} {
+		if !strings.Contains(joined, want) {
+			t.Fatalf("missing %q in args=%v", want, args)
+		}
+	}
+}
+
 func TestBuildCreateArgs_InvalidVolumeMount(t *testing.T) {
 	w := &Worker{}
 	req := minimalCreateHostRequest("bad")

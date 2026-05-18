@@ -31,6 +31,25 @@ func TestBuildGatewaySingBoxConfig(t *testing.T) {
 	if final, _ := route["final"].(string); final != "proxy-out" {
 		t.Errorf("route.final = %q, want %q", final, "proxy-out")
 	}
+	rules, _ := route["rules"].([]any)
+	if len(rules) == 0 {
+		t.Fatal("route.rules is empty")
+	}
+	firstRule, _ := rules[0].(map[string]any)
+	if got := firstRule["action"]; got != "sniff" {
+		t.Errorf("first route rule action = %v, want sniff", got)
+	}
+
+	inbounds, _ := parsed["inbounds"].([]any)
+	if len(inbounds) != 1 {
+		t.Fatalf("expected 1 inbound, got %d", len(inbounds))
+	}
+	tunIn, _ := inbounds[0].(map[string]any)
+	for _, legacy := range []string{"sniff", "sniff_override_destination"} {
+		if _, ok := tunIn[legacy]; ok {
+			t.Fatalf("tun inbound must not contain legacy sing-box 1.13 field %q: %#v", legacy, tunIn)
+		}
+	}
 
 	// Verify outbounds contains two entries (proxy-out + direct)
 	outbounds, _ := parsed["outbounds"].([]any)

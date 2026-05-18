@@ -235,6 +235,7 @@ func actionToHostStatus(action agentapi.HostAction) string {
 
 func (w *Worker) buildCreateArgs(request agentapi.HostActionRequest, containerName, hostname string) ([]string, error) {
 	homeDir := firstNonEmpty(request.HomeDir, hostHomeDir(request.HostID))
+	homeMount := workerHomeMount(request)
 	identity := request.WorkerIdentity
 	locale := identity.Locale
 
@@ -271,20 +272,28 @@ func (w *Worker) buildCreateArgs(request agentapi.HostActionRequest, containerNa
 		return nil, fmt.Errorf("host %s entry_password is empty; refusing to build create args", request.HostID)
 	}
 
-	linuxUser := firstNonEmpty(request.DefaultUser, "workspace")
+	linuxUser := firstNonEmpty(os.Getenv("CLOUD_CLI_PROXY_WORKER_USER"), request.DefaultUser, "workspace")
 	args = append(args,
 		"-e", "TZ="+firstNonEmpty(identity.Timezone, request.Timezone, "America/New_York"),
 		"-e", "LANG="+firstNonEmpty(locale.Lang, "en_US.UTF-8"),
 		"-e", "LANGUAGE="+firstNonEmpty(locale.Language, "en_US:en"),
 		"-e", "LC_ALL="+firstNonEmpty(locale.LCAll, "en_US.UTF-8"),
 		"-e", "CONTAINER_USER="+linuxUser,
+		"-e", "CONTAINER_HOME="+homeMount,
+		"-e", "HOME="+homeMount,
 		"-e", "CONTAINER_SSH_PASSWORD="+request.EntryPassword,
 		"-e", "CLOUDPROXY_MACHINE_ID="+identity.MachineID,
 		"-e", "CLOUDPROXY_VNC_RESOLUTION="+firstNonEmpty(identity.VNCResolution, "1920x1080"),
 		"-e", "CLOUDPROXY_BROWSER_LANGUAGE="+firstNonEmpty(identity.BrowserLanguage, "en-US"),
 		"-e", "CLOUDPROXY_BROWSER_WINDOW_SIZE="+firstNonEmpty(identity.BrowserWindowSize, "1920x1080"),
-		"-v", fmt.Sprintf("%s:%s", homeDir, firstNonEmpty(request.HomeMount, defaultWorkspaceMount)),
+		"-v", fmt.Sprintf("%s:%s", homeDir, homeMount),
 	)
+	if uid := strings.TrimSpace(os.Getenv("CLOUD_CLI_PROXY_WORKER_UID")); uid != "" {
+		args = append(args, "-e", "CONTAINER_UID="+uid)
+	}
+	if gid := strings.TrimSpace(os.Getenv("CLOUD_CLI_PROXY_WORKER_GID")); gid != "" {
+		args = append(args, "-e", "CONTAINER_GID="+gid)
+	}
 
 	for _, vm := range request.Volumes {
 		if vm.Name == "" || vm.Target == "" {
@@ -336,6 +345,10 @@ func (w *Worker) buildCreateArgs(request agentapi.HostActionRequest, containerNa
 
 	args = append(args, request.ImageName)
 	return args, nil
+}
+
+func workerHomeMount(request agentapi.HostActionRequest) string {
+	return firstNonEmpty(os.Getenv("CLOUD_CLI_PROXY_WORKER_HOME"), request.HomeMount, defaultWorkspaceMount)
 }
 
 func (w *Worker) createHost(ctx context.Context, request agentapi.HostActionRequest) error {
@@ -643,7 +656,7 @@ func (w *Worker) waitForSSH(ctx context.Context, request agentapi.HostActionRequ
 // syncContainerCredentials forces the container's Linux password to match
 // the request, regardless of what the entrypoint set via environment variables.
 func (w *Worker) syncContainerCredentials(ctx context.Context, request agentapi.HostActionRequest, containerName string) {
-	user := firstNonEmpty(request.DefaultUser, "workspace")
+	user := firstNonEmpty(os.Getenv("CLOUD_CLI_PROXY_WORKER_USER"), request.DefaultUser, "workspace")
 	if request.EntryPassword == "" {
 		w.repo.RecordEvent(ctx, repository.RecordEventParams{
 			HostID:  &request.HostID,
@@ -680,8 +693,8 @@ func (w *Worker) injectSSHKeys(ctx context.Context, request agentapi.HostActionR
 	}
 
 	// 必须与容器内 CONTAINER_USER / entrypoint 一致；不能用平台用户名（request.Username）。
-	user := firstNonEmpty(request.DefaultUser, "workspace")
-	sshDir := "/workspace/.ssh"
+	user := firstNonEmpty(os.Getenv("CLOUD_CLI_PROXY_WORKER_USER"), request.DefaultUser, "workspace")
+	sshDir := workerHomeMount(request) + "/.ssh"
 
 	var managed []string
 	if proxyPubKey := loadProxyPublicKey(); proxyPubKey != "" {
@@ -705,8 +718,8 @@ func (w *Worker) injectSSHKeys(ctx context.Context, request agentapi.HostActionR
 		w.fixFileOwnership(ctx, request, containerName, user, authorizedPath, "600")
 	default:
 		writeScript := fmt.Sprintf(
-			"mkdir -p %s && cat > %s && chmod 600 %s && chown %s:%s %s",
-			sshDir, authorizedPath, authorizedPath, user, user, authorizedPath,
+			"mkdir -p %s && chown %s %s && cat > %s && chmod 600 %s && chown %s %s",
+			sshDir, user, sshDir, authorizedPath, authorizedPath, user, authorizedPath,
 		)
 		if out, err := execInContainer(ctx, containerName, writeScript, merged); err != nil {
 			w.repo.RecordEvent(ctx, repository.RecordEventParams{
@@ -754,8 +767,8 @@ func (w *Worker) injectSSHKeys(ctx context.Context, request agentapi.HostActionR
 				w.fixFileOwnership(ctx, request, containerName, user, keyFile, "600")
 			} else {
 				script := fmt.Sprintf(
-					"mkdir -p %s && cat > %s && chmod 600 %s && chown %s:%s %s",
-					sshDir, keyFile, keyFile, user, user, keyFile,
+					"mkdir -p %s && chown %s %s && cat > %s && chmod 600 %s && chown %s %s",
+					sshDir, user, sshDir, keyFile, keyFile, user, keyFile,
 				)
 				if out, err := execInContainer(ctx, containerName, script, key.PrivateKey); err != nil {
 					w.repo.RecordEvent(ctx, repository.RecordEventParams{
@@ -780,8 +793,8 @@ func (w *Worker) injectSSHKeys(ctx context.Context, request agentapi.HostActionR
 				w.fixFileOwnership(ctx, request, containerName, user, pubFile, "644")
 			} else {
 				script := fmt.Sprintf(
-					"mkdir -p %s && cat > %s && chmod 644 %s && chown %s:%s %s",
-					sshDir, pubFile, pubFile, user, user, pubFile,
+					"mkdir -p %s && chown %s %s && cat > %s && chmod 644 %s && chown %s %s",
+					sshDir, user, sshDir, pubFile, pubFile, user, pubFile,
 				)
 				if out, err := execInContainer(ctx, containerName, script, key.PublicKey); err != nil {
 					w.repo.RecordEvent(ctx, repository.RecordEventParams{
@@ -799,8 +812,8 @@ func (w *Worker) injectSSHKeys(ctx context.Context, request agentapi.HostActionR
 }
 
 func (w *Worker) injectSSHKeysLegacy(ctx context.Context, request agentapi.HostActionRequest, containerName string) {
-	user := firstNonEmpty(request.DefaultUser, "workspace")
-	sshDir := "/workspace/.ssh"
+	user := firstNonEmpty(os.Getenv("CLOUD_CLI_PROXY_WORKER_USER"), request.DefaultUser, "workspace")
+	sshDir := workerHomeMount(request) + "/.ssh"
 
 	if request.SSHPrivateKey != "" {
 		keyFile := sshDir + "/id_ed25519"
@@ -819,8 +832,8 @@ func (w *Worker) injectSSHKeysLegacy(ctx context.Context, request agentapi.HostA
 			w.fixFileOwnership(ctx, request, containerName, user, keyFile, "600")
 		} else {
 			script := fmt.Sprintf(
-				"mkdir -p %s && cat > %s && chmod 600 %s && chown %s:%s %s",
-				sshDir, keyFile, keyFile, user, user, keyFile,
+				"mkdir -p %s && chown %s %s && cat > %s && chmod 600 %s && chown %s %s",
+				sshDir, user, sshDir, keyFile, keyFile, user, keyFile,
 			)
 			if out, err := execInContainer(ctx, containerName, script, request.SSHPrivateKey); err != nil {
 				w.repo.RecordEvent(ctx, repository.RecordEventParams{
@@ -850,8 +863,8 @@ func (w *Worker) injectSSHKeysLegacy(ctx context.Context, request agentapi.HostA
 			w.fixFileOwnership(ctx, request, containerName, user, pubKeyFile, "644")
 		} else {
 			script := fmt.Sprintf(
-				"mkdir -p %s && cat > %s && chmod 644 %s && chown %s:%s %s",
-				sshDir, pubKeyFile, pubKeyFile, user, user, pubKeyFile,
+				"mkdir -p %s && chown %s %s && cat > %s && chmod 644 %s && chown %s %s",
+				sshDir, user, sshDir, pubKeyFile, pubKeyFile, user, pubKeyFile,
 			)
 			if out, err := execInContainer(ctx, containerName, script, request.SSHPublicKey); err != nil {
 				w.repo.RecordEvent(ctx, repository.RecordEventParams{
@@ -992,7 +1005,7 @@ func mergeAuthorizedKeys(existing string, managed []string) string {
 
 // fixFileOwnership 只修属主/权限，不重写内容；chown/chmod 失败仅记录 warn 事件，不阻断后续流程。
 func (w *Worker) fixFileOwnership(ctx context.Context, request agentapi.HostActionRequest, containerName, user, path, mode string) {
-	script := fmt.Sprintf("chown %s:%s %s && chmod %s %s", user, user, path, mode, path)
+	script := fmt.Sprintf("chown %s %s && chmod %s %s", user, path, mode, path)
 	if out, err := execInContainer(ctx, containerName, script, ""); err != nil {
 		w.repo.RecordEvent(ctx, repository.RecordEventParams{
 			HostID:   &request.HostID,

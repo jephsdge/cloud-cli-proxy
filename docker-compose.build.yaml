@@ -56,6 +56,7 @@ services:
       dockerfile: deploy/docker/managed-user/Dockerfile
       args:
         CLAUDE_CODE_VERSION: *claude_code_version
+        CLOUD_CLI_PROXY_WORKER_EXTRA_APT_PACKAGES: ${CLOUD_CLI_PROXY_WORKER_EXTRA_APT_PACKAGES:-}
         NPM_CONFIG_REGISTRY: ${NPM_CONFIG_REGISTRY:-}
         HTTP_PROXY: ${HTTP_PROXY:-}
         HTTPS_PROXY: ${HTTPS_PROXY:-}

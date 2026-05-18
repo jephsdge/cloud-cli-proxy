@@ -3,6 +3,7 @@ set -euo pipefail
 
 export DISPLAY="${DISPLAY:-:99}"
 export HOME="${HOME:-/workspace}"
+chrome_user_data_dir="${CHROME_USER_DATA_DIR:-${HOME}/.chrome-data}"
 
 browser_cmd=""
 for candidate in chromium chromium-browser google-chrome; do
@@ -31,7 +32,7 @@ fi
 exec "${browser_cmd}" \
   --no-sandbox \
   --disable-dev-shm-usage \
-  --user-data-dir=/workspace/.chrome-data \
+  --user-data-dir="${chrome_user_data_dir}" \
   --start-maximized \
   --no-first-run \
   --disable-gpu \

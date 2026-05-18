@@ -19,12 +19,12 @@ func main() {
 		Addr:           envOrDefault("CONTROL_PLANE_ADDR", ":8080"),
 		DatabaseURL:    os.Getenv("DATABASE_URL"),
 		MigrationDir:   "internal/store/migrations",
-		AdminUsername:   envOrDefault("ADMIN_USERNAME", "admin"),
+		AdminUsername:  envOrDefault("ADMIN_USERNAME", "admin"),
 		AdminPassword:  os.Getenv("ADMIN_PASSWORD"),
 		AdminJWTSecret: os.Getenv("ADMIN_JWT_SECRET"),
 
 		SSHProxyAddr:              envOrDefault("SSH_PROXY_ADDR", ":2222"),
-		SSHProxyContainerUser:     envOrDefault("SSH_PROXY_CONTAINER_USER", "workspace"),
+		SSHProxyContainerUser:     envOrDefault("SSH_PROXY_CONTAINER_USER", envOrDefault("CLOUD_CLI_PROXY_WORKER_USER", "workspace")),
 		SSHProxyContainerPassword: envOrDefault("SSH_PROXY_CONTAINER_PASSWORD", "workspace"),
 		SSHProxyHostKeyPath:       envOrDefault("SSH_PROXY_HOST_KEY_PATH", "/var/lib/cloud-cli-proxy/ssh_host_ed25519_key"),
 	}

@@ -153,20 +153,19 @@ func buildGatewaySingBoxConfig(outboundRaw json.RawMessage, dnsServer, proxyServ
 	}
 
 	tunIn, err := json.Marshal(map[string]any{
-		"type":                       "tun",
-		"tag":                        "tun-in",
-		"address":                    []string{"172.19.0.1/30"},
-		"auto_route":                 true,
-		"strict_route":               false,
-		"stack":                      "mixed",
-		"sniff":                      true,
-		"sniff_override_destination": true,
+		"type":         "tun",
+		"tag":          "tun-in",
+		"address":      []string{"172.19.0.1/30"},
+		"auto_route":   true,
+		"strict_route": false,
+		"stack":        "mixed",
 	})
 	if err != nil {
 		return nil, fmt.Errorf("marshal tun inbound: %w", err)
 	}
 
-	routeRules := make([]map[string]any, 0, 2)
+	routeRules := make([]map[string]any, 0, 3)
+	routeRules = append(routeRules, map[string]any{"action": "sniff"})
 	if proxyServerIP != "" {
 		routeRules = append(routeRules, map[string]any{"ip_cidr": []string{proxyServerIP + "/32"}, "outbound": "direct"})
 	}

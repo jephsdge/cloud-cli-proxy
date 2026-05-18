@@ -1,13 +1,26 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-LOG_DIR=/workspace/.vnc
+CONTAINER_USER="${CONTAINER_USER:-workspace}"
+CONTAINER_UID="${CONTAINER_UID:-1000}"
+CONTAINER_GID="${CONTAINER_GID:-1000}"
+CONTAINER_HOME="${CONTAINER_HOME:-${HOME:-/workspace}}"
+CONTAINER_PASSWORD="${CONTAINER_SSH_PASSWORD:-workspace}"
+
+RUN_USER="${CONTAINER_USER}"
+RUN_UID="${CONTAINER_UID}"
+RUN_GID="${CONTAINER_GID}"
+RUN_HOME="${CONTAINER_HOME}"
+export HOME="${RUN_HOME}"
+
+LOG_DIR="${RUN_HOME}/.vnc"
 XVNC_LOG="${LOG_DIR}/xvnc.log"
 FLUXBOX_LOG="${LOG_DIR}/fluxbox.log"
 DESKTOP_LOG="${LOG_DIR}/desktop.log"
 CHROMIUM_LOG="${LOG_DIR}/chromium.log"
-DESKTOP_DIR=/workspace/Desktop
-PCMANFM_PROFILE_DIR=/workspace/.config/pcmanfm/default
+DESKTOP_DIR="${RUN_HOME}/Desktop"
+PCMANFM_PROFILE_DIR="${RUN_HOME}/.config/pcmanfm/default"
+SSHD_PID=""
 
 prepare_timezone() {
   if [ -n "${TZ:-}" ] && [ -f "/usr/share/zoneinfo/${TZ}" ]; then
@@ -16,8 +29,58 @@ prepare_timezone() {
   fi
 }
 
+start_sshd() {
+  if [ -n "${SSHD_PID}" ] && kill -0 "${SSHD_PID}" 2>/dev/null; then
+    return
+  fi
+
+  /usr/sbin/sshd -D -e &
+  SSHD_PID="$!"
+  echo "[entrypoint] sshd started (pid=${SSHD_PID})"
+}
+
+ensure_runtime_user() {
+  if ! [[ "${RUN_UID}" =~ ^[0-9]+$ ]] || ! [[ "${RUN_GID}" =~ ^[0-9]+$ ]]; then
+    echo "[entrypoint] FATAL: CONTAINER_UID and CONTAINER_GID must be numeric" >&2
+    exit 1
+  fi
+
+  # 清除 Ubuntu 镜像自带的 ubuntu 用户（UID 1000 冲突会导致 whoami 返回 ubuntu）。
+  if [ "${RUN_USER}" != "ubuntu" ] && id ubuntu >/dev/null 2>&1; then
+    userdel -f ubuntu 2>/dev/null || true
+    groupdel ubuntu 2>/dev/null || true
+  fi
+
+  if [ "${RUN_USER}" != "workspace" ] && id workspace >/dev/null 2>&1 && ! id "${RUN_USER}" >/dev/null 2>&1; then
+    usermod -l "${RUN_USER}" workspace
+    groupmod -n "${RUN_USER}" workspace 2>/dev/null || true
+  fi
+
+  if ! getent group "${RUN_USER}" >/dev/null 2>&1; then
+    groupadd -o -g "${RUN_GID}" "${RUN_USER}" 2>/dev/null || true
+  fi
+
+  if getent group "${RUN_USER}" >/dev/null 2>&1; then
+    groupmod -o -g "${RUN_GID}" "${RUN_USER}" 2>/dev/null || true
+  fi
+
+  if id "${RUN_USER}" >/dev/null 2>&1; then
+    usermod -o -u "${RUN_UID}" -g "${RUN_GID}" -d "${RUN_HOME}" -s /bin/bash "${RUN_USER}"
+  else
+    useradd -o --uid "${RUN_UID}" --gid "${RUN_GID}" --home-dir "${RUN_HOME}" --create-home --shell /bin/bash "${RUN_USER}"
+  fi
+
+  echo "${RUN_USER} ALL=(ALL) NOPASSWD:ALL" > /etc/sudoers.d/workspace
+  chmod 0440 /etc/sudoers.d/workspace
+
+  mkdir -p "${RUN_HOME}/.ssh"
+  # 只修正主目录和受控子目录本身，避免 bind mount 时递归改掉宿主机代码目录归属。
+  chown "${RUN_UID}:${RUN_GID}" "${RUN_HOME}" "${RUN_HOME}/.ssh" 2>/dev/null || true
+  chmod 0700 "${RUN_HOME}/.ssh"
+}
+
 write_desktop_config() {
-  mkdir -p "${DESKTOP_DIR}" "${PCMANFM_PROFILE_DIR}" /workspace/.chrome-data
+  mkdir -p "${DESKTOP_DIR}" "${PCMANFM_PROFILE_DIR}" "${RUN_HOME}/.chrome-data"
 
   cat > "${DESKTOP_DIR}/Chrome.desktop" <<'DESKTOP'
 [Desktop Entry]
@@ -46,7 +109,7 @@ show_mounts=0
 CONF
 
   chmod 0755 "${DESKTOP_DIR}/Chrome.desktop"
-  chown -R "${RUN_USER}:${RUN_USER}" "${DESKTOP_DIR}" /workspace/.config /workspace/.chrome-data
+  chown -R "${RUN_UID}:${RUN_GID}" "${DESKTOP_DIR}" "${RUN_HOME}/.config" "${RUN_HOME}/.chrome-data"
 }
 
 wait_for_x_display() {
@@ -77,7 +140,7 @@ normalize_resolution() {
 
 prepare_v3_dirs() {
   echo "[entrypoint] v3: chown /home/claude /workspace-hot /workspace-cold /var/lib/claude-persist"
-  chown -R 1000:1000 \
+  chown -R "${RUN_UID}:${RUN_GID}" \
     /home/claude \
     /workspace-hot \
     /workspace-cold \
@@ -95,14 +158,14 @@ prepare_persistent_state() {
     cp -an /home/claude/.cache/claude/. "$root/.cache/claude/" 2>/dev/null || true
   fi
 
-  chown -R 1000:1000 "$root"
+  chown -R "${RUN_UID}:${RUN_GID}" "$root"
 
   rm -rf /home/claude/.claude /home/claude/.cache/claude
   ln -sfn "$root/.claude" /home/claude/.claude
   mkdir -p /home/claude/.cache
   ln -sfn "$root/.cache/claude" /home/claude/.cache/claude
 
-  chown -h 1000:1000 /home/claude/.claude /home/claude/.cache/claude
+  chown -h "${RUN_UID}:${RUN_GID}" /home/claude/.claude /home/claude/.cache/claude
 
   echo "[entrypoint] v3: persistent state ready (volume=/var/lib/claude-persist)"
 }
@@ -172,6 +235,7 @@ assert_tmux_version() {
 }
 
 prepare_timezone
+ensure_runtime_user
 
 # SSH setup
 mkdir -p /var/run/sshd
@@ -179,38 +243,11 @@ if ! ls /etc/ssh/ssh_host_*_key >/dev/null 2>&1; then
   ssh-keygen -A
 fi
 
-CONTAINER_USER="${CONTAINER_USER:-workspace}"
-CONTAINER_PASSWORD="${CONTAINER_SSH_PASSWORD:-workspace}"
-
-# 清除 Ubuntu 镜像自带的 ubuntu 用户（UID 1000 冲突会导致 whoami 返回 ubuntu）
-if [ "$CONTAINER_USER" != "ubuntu" ] && id ubuntu >/dev/null 2>&1; then
-  userdel -f ubuntu 2>/dev/null || true
-  groupdel ubuntu 2>/dev/null || true
-fi
-
-if [ "$CONTAINER_USER" != "workspace" ] && id workspace >/dev/null 2>&1; then
-  usermod -l "$CONTAINER_USER" workspace
-  groupmod -n "$CONTAINER_USER" workspace 2>/dev/null || true
-  if [ -f /etc/sudoers.d/workspace ]; then
-    sed -i "s/^workspace /${CONTAINER_USER} /" /etc/sudoers.d/workspace
-  fi
-fi
-
-RUN_USER="${CONTAINER_USER:-workspace}"
-
-# 确保 sudoers 始终与实际用户名一致（修复历史容器可能残留的错误配置）
-echo "${RUN_USER} ALL=(ALL) NOPASSWD:ALL" > /etc/sudoers.d/workspace
-chmod 0440 /etc/sudoers.d/workspace
-
-mkdir -p /workspace/.ssh
-chown -R "${RUN_USER}:${RUN_USER}" /workspace
-chmod 0700 /workspace/.ssh
-
 # 注入 SSH 公钥（local 模式或显式传入时）
 if [ -n "${CONTAINER_SSH_AUTHORIZED_KEY:-}" ]; then
-  echo "${CONTAINER_SSH_AUTHORIZED_KEY}" > /workspace/.ssh/authorized_keys
-  chmod 0600 /workspace/.ssh/authorized_keys
-  chown "${RUN_USER}:${RUN_USER}" /workspace/.ssh/authorized_keys
+  echo "${CONTAINER_SSH_AUTHORIZED_KEY}" > "${RUN_HOME}/.ssh/authorized_keys"
+  chmod 0600 "${RUN_HOME}/.ssh/authorized_keys"
+  chown "${RUN_UID}:${RUN_GID}" "${RUN_HOME}/.ssh/authorized_keys"
 fi
 
 echo "${RUN_USER}:${CONTAINER_PASSWORD}" | chpasswd
@@ -231,6 +268,10 @@ esac
 sysctl -w net.ipv6.conf.all.disable_ipv6=1 >/dev/null 2>&1 || true
 sysctl -w net.ipv6.conf.default.disable_ipv6=1 >/dev/null 2>&1 || true
 
+# SSH readiness is used by control-plane immediately after docker start.
+# Start sshd before slower optional services such as VNC and desktop setup.
+start_sshd
+
 if [ -c /dev/fuse ]; then
   chmod 666 /dev/fuse
 fi
@@ -240,11 +281,11 @@ MODE="${MODE:-remote}"
 
 if [ "$MODE" != "local" ]; then
 # KasmVNC 配置（无密码认证——由控制面反代保护）
-mkdir -p /workspace/.vnc
+mkdir -p "${LOG_DIR}"
 VNC_RESOLUTION="$(normalize_resolution "${CLOUDPROXY_VNC_RESOLUTION:-1920x1080}")"
 VNC_WIDTH="${VNC_RESOLUTION%x*}"
 VNC_HEIGHT="${VNC_RESOLUTION#*x}"
-cat > /workspace/.vnc/kasmvnc.yaml <<YAML
+cat > "${LOG_DIR}/kasmvnc.yaml" <<YAML
 network:
   protocol: http
   websocket_port: 6080
@@ -282,13 +323,13 @@ encoding:
     consider_lossless_quality: 10
     rectangle_compress_threads: 4
 YAML
-chown -R "${RUN_USER}:${RUN_USER}" /workspace/.vnc
+chown -R "${RUN_UID}:${RUN_GID}" "${LOG_DIR}"
 touch "${XVNC_LOG}" "${FLUXBOX_LOG}" "${DESKTOP_LOG}" "${CHROMIUM_LOG}"
-chown "${RUN_USER}:${RUN_USER}" "${XVNC_LOG}" "${FLUXBOX_LOG}" "${DESKTOP_LOG}" "${CHROMIUM_LOG}"
+chown "${RUN_UID}:${RUN_GID}" "${XVNC_LOG}" "${FLUXBOX_LOG}" "${DESKTOP_LOG}" "${CHROMIUM_LOG}"
 
 # 创建 KasmVNC 用户（非交互，避免卡在 TUI 提示）
-echo -e "kasmpass\nkasmpass\n" | kasmvncpasswd -u "${RUN_USER}" -w /workspace/.vnc/passwd 2>/dev/null || true
-chown "${RUN_USER}:${RUN_USER}" /workspace/.vnc/passwd
+echo -e "kasmpass\nkasmpass\n" | kasmvncpasswd -u "${RUN_USER}" -w "${LOG_DIR}/passwd" 2>/dev/null || true
+[ -f "${LOG_DIR}/passwd" ] && chown "${RUN_UID}:${RUN_GID}" "${LOG_DIR}/passwd"
 
 # 创建 /tmp/.X11-unix（非 root 用户启动 Xvnc 需要）
 mkdir -p /tmp/.X11-unix
@@ -322,10 +363,10 @@ write_desktop_config
 DISPLAY=:99 xsetroot -solid "#17324d" >/dev/null 2>&1 || true
 
 su "${RUN_USER}" -c 'DISPLAY=:99 fluxbox' >>"${FLUXBOX_LOG}" 2>&1 &
-su "${RUN_USER}" -c 'DISPLAY=:99 HOME=/workspace pcmanfm --desktop --profile default' >>"${DESKTOP_LOG}" 2>&1 &
+su "${RUN_USER}" -c "DISPLAY=:99 HOME=${RUN_HOME@Q} pcmanfm --desktop --profile default" >>"${DESKTOP_LOG}" 2>&1 &
 
 # 预热一遍 Chromium 检测，方便排查图标点击失败。
-su "${RUN_USER}" -c 'HOME=/workspace /usr/local/bin/launch-chromium.sh --version' >>"${CHROMIUM_LOG}" 2>&1 || true
+su "${RUN_USER}" -c "HOME=${RUN_HOME@Q} /usr/local/bin/launch-chromium.sh --version" >>"${CHROMIUM_LOG}" 2>&1 || true
 
 # ===== v3.0 stages (serialized fail-fast, D-09 order) =====
 prepare_v3_dirs
@@ -407,5 +448,5 @@ PROXYENV
   fi
 fi
 
-# Foreground: sshd
-exec /usr/sbin/sshd -D -e
+# Foreground: keep container lifecycle tied to sshd.
+wait "${SSHD_PID}"
