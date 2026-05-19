@@ -197,6 +197,12 @@ func (sp *SingBoxProvider) PrepareHost(ctx context.Context, spec HostNetworkSpec
 	return nil
 }
 
+// RefreshHost is a no-op for the legacy in-container sing-box provider because
+// it does not own host-side userland port forward listeners.
+func (sp *SingBoxProvider) RefreshHost(_ context.Context, _ HostNetworkSpec) error {
+	return nil
+}
+
 // CleanupHost removes host-side network artifacts for a proxy-mode container.
 // Errors are logged but not returned to prevent cleanup failures from
 // blocking container rebuild operations.

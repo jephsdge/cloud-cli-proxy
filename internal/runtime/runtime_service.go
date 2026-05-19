@@ -216,7 +216,7 @@ func (s *Service) QueueHostAction(ctx context.Context, hostID string, action age
 		}
 	}
 
-	if request.EntryPassword == "" {
+	if actionRequiresEntryPassword(action) && request.EntryPassword == "" {
 		hid := hostID
 		if s.repo != nil {
 			_, _ = s.repo.RecordEvent(ctx, repository.RecordEventParams{
@@ -274,6 +274,10 @@ func (s *Service) QueueHostAction(ctx context.Context, hostID string, action age
 	}()
 
 	return task, nil
+}
+
+func actionRequiresEntryPassword(action agentapi.HostAction) bool {
+	return action != agentapi.ActionPrepareHost
 }
 
 func LoadRuntimeSpec(path string) (RuntimeSpec, error) {

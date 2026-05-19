@@ -37,6 +37,11 @@ func (rp *RoutingProvider) PrepareHost(ctx context.Context, spec HostNetworkSpec
 	return rp.singbox.PrepareHost(ctx, spec)
 }
 
+// RefreshHost restores volatile host-side state when supported by the backend.
+func (rp *RoutingProvider) RefreshHost(ctx context.Context, spec HostNetworkSpec) error {
+	return rp.singbox.RefreshHost(ctx, spec)
+}
+
 // CleanupHost cleans up artifacts from the sing-box provider.
 func (rp *RoutingProvider) CleanupHost(ctx context.Context, spec HostNetworkSpec) error {
 	rp.singbox.CleanupHost(ctx, spec)

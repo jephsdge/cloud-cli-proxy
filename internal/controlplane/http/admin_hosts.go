@@ -1105,7 +1105,9 @@ func (h *AdminHostsHandler) UpdatePorts() nethttp.Handler {
 			writeJSON(w, nethttp.StatusBadRequest, map[string]string{"error": "invalid request body"})
 			return
 		}
-		for _, p := range body.Ports {
+		for i := range body.Ports {
+			p := &body.Ports[i]
+			p.Protocol = strings.ToLower(strings.TrimSpace(p.Protocol))
 			if p.HostPort <= 0 || p.HostPort > 65535 {
 				writeJSON(w, nethttp.StatusBadRequest, map[string]string{"error": fmt.Sprintf("invalid host port: %d", p.HostPort)})
 				return
@@ -1134,7 +1136,34 @@ func (h *AdminHostsHandler) UpdatePorts() nethttp.Handler {
 				h.logger.Error("record event failed", "type", "admin.host.update_ports", "error", err)
 			}
 		}
-		writeJSON(w, nethttp.StatusOK, map[string]string{"status": "ok"})
+
+		refreshStatus := "skipped"
+		var refreshTaskID string
+		var refreshError string
+		if h.queue != nil {
+			if host, err := h.store.GetHost(r.Context(), hostID); err != nil {
+				refreshStatus = "unknown"
+				refreshError = err.Error()
+				h.logger.Warn("get host after port update failed; skip port refresh", "host_id", hostID, "error", err)
+			} else if host.Status == "running" {
+				task, err := h.queue.QueueHostAction(r.Context(), hostID, agentapi.ActionPrepareHost, "admin")
+				if err != nil {
+					refreshStatus = "failed"
+					refreshError = err.Error()
+					h.logger.Warn("queue port refresh failed", "host_id", hostID, "error", err)
+				} else {
+					refreshStatus = "queued"
+					refreshTaskID = task.ID
+				}
+			}
+		}
+
+		writeJSON(w, nethttp.StatusOK, map[string]any{
+			"status":          "ok",
+			"refresh_status":  refreshStatus,
+			"refresh_task_id": refreshTaskID,
+			"refresh_error":   refreshError,
+		})
 	})
 }
 

@@ -85,7 +85,9 @@ func (w *Worker) Execute(ctx context.Context, request agentapi.HostActionRequest
 				"action", request.Action,
 				"panic", r,
 			)
-			_ = w.repo.UpdateHostStatus(ctx, request.HostID, "failed")
+			if request.Action != agentapi.ActionPrepareHost {
+				_ = w.repo.UpdateHostStatus(ctx, request.HostID, "failed")
+			}
 			update = agentapi.TaskStatusUpdate{
 				TaskID:           request.TaskID,
 				Status:           taskStateFailed,
@@ -114,7 +116,7 @@ func (w *Worker) Execute(ctx context.Context, request agentapi.HostActionRequest
 	case agentapi.ActionRebuildHost:
 		err = w.rebuildHost(ctx, request)
 	case agentapi.ActionPrepareHost:
-		err = w.validateAndPrepare(ctx, request.HostID)
+		err = w.prepareHostNetwork(ctx, request)
 	case agentapi.ActionVolumeRemove:
 		err = w.removeVolumes(ctx, request)
 	default:
@@ -122,45 +124,36 @@ func (w *Worker) Execute(ctx context.Context, request agentapi.HostActionRequest
 	}
 
 	if err != nil {
+		if request.Action == agentapi.ActionPrepareHost {
+			return agentapi.TaskStatusUpdate{
+				TaskID:           request.TaskID,
+				Status:           taskStateFailed,
+				ErrorCode:        errorCodeForHostAction(err),
+				ErrorMessage:     err.Error(),
+				LastErrorSummary: summarizeError(err),
+			}
+		}
+
 		// 失败路径：先停止容器，避免 DB=failed 但 docker=running 的分裂
 		containerName := firstNonEmpty(request.ContainerName, containerNameForHost(request.HostID))
 		_ = w.runDocker(ctx, "stop", containerName)
 
-		errorCode := "host_action_failed"
-		if strings.HasPrefix(err.Error(), "volume_in_use:") {
-			errorCode = "volume_in_use"
-		}
-		var sshErr *SSHNotReadyError
-		var netErr *network.NetworkError
-		if errors.As(err, &sshErr) {
-			errorCode = "ssh_not_ready"
-		} else if errors.As(err, &netErr) {
-			switch netErr.Type {
-			case network.ErrBindingMissing:
-				errorCode = "egress_binding_missing"
-			case network.ErrEgressIPMismatch:
-				errorCode = "egress_ip_mismatch"
-			case network.ErrDNSLeak:
-				errorCode = "dns_leak"
-			case network.ErrLeakNotBlocked:
-				errorCode = "leak_not_blocked"
-			case network.ErrEgressUnreachable:
-				errorCode = "egress_unreachable"
-			case network.ErrTunnelSetupFailed:
-				errorCode = "tunnel_setup_failed"
-			default:
-				errorCode = "network_error"
-			}
-		}
 		_ = w.repo.UpdateHostStatus(ctx, request.HostID, "failed")
 		broadcast.Broadcast("hosts", "update", request.HostID)
 		broadcast.Broadcast("events", "update", "")
 		return agentapi.TaskStatusUpdate{
 			TaskID:           request.TaskID,
 			Status:           taskStateFailed,
-			ErrorCode:        errorCode,
+			ErrorCode:        errorCodeForHostAction(err),
 			ErrorMessage:     err.Error(),
 			LastErrorSummary: summarizeError(err),
+		}
+	}
+
+	if request.Action == agentapi.ActionPrepareHost {
+		return agentapi.TaskStatusUpdate{
+			TaskID: request.TaskID,
+			Status: taskStateSucceeded,
 		}
 	}
 
@@ -200,6 +193,37 @@ func (w *Worker) lockHostAction(hostID string) func() {
 		}
 		w.lockMu.Unlock()
 	}
+}
+
+func errorCodeForHostAction(err error) string {
+	errorCode := "host_action_failed"
+	if strings.HasPrefix(err.Error(), "volume_in_use:") {
+		return "volume_in_use"
+	}
+	var sshErr *SSHNotReadyError
+	var netErr *network.NetworkError
+	if errors.As(err, &sshErr) {
+		return "ssh_not_ready"
+	}
+	if errors.As(err, &netErr) {
+		switch netErr.Type {
+		case network.ErrBindingMissing:
+			errorCode = "egress_binding_missing"
+		case network.ErrEgressIPMismatch:
+			errorCode = "egress_ip_mismatch"
+		case network.ErrDNSLeak:
+			errorCode = "dns_leak"
+		case network.ErrLeakNotBlocked:
+			errorCode = "leak_not_blocked"
+		case network.ErrEgressUnreachable:
+			errorCode = "egress_unreachable"
+		case network.ErrTunnelSetupFailed:
+			errorCode = "tunnel_setup_failed"
+		default:
+			errorCode = "network_error"
+		}
+	}
+	return errorCode
 }
 
 func (w *Worker) UpdateTaskStatus(ctx context.Context, update agentapi.TaskStatusUpdate) error {
@@ -531,6 +555,31 @@ func (w *Worker) startHost(ctx context.Context, request agentapi.HostActionReque
 		return err
 	}
 
+	return nil
+}
+
+func (w *Worker) prepareHostNetwork(ctx context.Context, request agentapi.HostActionRequest) error {
+	if err := w.validateAndPrepare(ctx, request.HostID); err != nil {
+		return err
+	}
+
+	egressCfg, err := w.buildEgressConfig(ctx, request.HostID)
+	if err != nil {
+		return err
+	}
+	if egressCfg == nil {
+		return nil
+	}
+
+	spec := network.HostNetworkSpec{
+		HostID:       request.HostID,
+		Egress:       egressCfg,
+		PortMappings: request.PortMappings,
+	}
+	if err := w.provider.RefreshHost(ctx, spec); err != nil {
+		w.recordNetworkError(ctx, request.HostID, err)
+		return fmt.Errorf("refresh host network: %w", err)
+	}
 	return nil
 }
 

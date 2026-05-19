@@ -277,12 +277,43 @@ func TestPrepareHost_AlwaysInstallsWorkerRouting(t *testing.T) {
 	}
 
 	body := string(source)
-	setupIdx := strings.Index(body, "setupPortForwarding(ctx, hostID, bridgeGW, gwIP, spec.PortMappings)")
+	routingIdx := strings.Index(body, "宿主机 iptables / policy routing 规则")
+	if routingIdx < 0 {
+		t.Fatal("expected host-side routing setup comment to exist")
+	}
+	routingBody := body[routingIdx:]
+	setupIdx := strings.Index(routingBody, "setupPortForwarding(ctx, hostID, bridgeGW, gwIP, spec.PortMappings)")
 	if setupIdx < 0 {
 		t.Fatal("expected setupPortForwarding call to exist")
 	}
-	guardIdx := strings.LastIndex(body[:setupIdx], "if len(spec.PortMappings) > 0")
+	guardIdx := strings.LastIndex(routingBody[:setupIdx], "if len(spec.PortMappings) > 0")
 	if guardIdx >= 0 {
 		t.Fatalf("setupPortForwarding must not be guarded by PortMappings length; found guard before call at %d", guardIdx)
+	}
+}
+
+func TestRefreshHost_DoesNotRecreateGateway(t *testing.T) {
+	source, err := os.ReadFile("container_proxy_provider.go")
+	if err != nil {
+		t.Fatalf("read provider source: %v", err)
+	}
+
+	body := string(source)
+	startIdx := strings.Index(body, "func (p *ContainerProxyProvider) RefreshHost")
+	if startIdx < 0 {
+		t.Fatal("expected RefreshHost function to exist")
+	}
+	endIdx := strings.Index(body[startIdx:], "func (p *ContainerProxyProvider) CleanupHost")
+	if endIdx < 0 {
+		t.Fatal("expected CleanupHost function to exist after RefreshHost")
+	}
+	refreshBody := body[startIdx : startIdx+endIdx]
+	for _, forbidden := range []string{"teardownGateway", "dockerCreateGateway", "dockerStartGateway", "dockerNetworkCreate("} {
+		if strings.Contains(refreshBody, forbidden) {
+			t.Fatalf("RefreshHost must not recreate gateway/network; found %q", forbidden)
+		}
+	}
+	if !strings.Contains(refreshBody, "setupPortForwarding(ctx, hostID, bridgeGW, gwIP, spec.PortMappings)") {
+		t.Fatal("RefreshHost must refresh host-side port forwarding")
 	}
 }

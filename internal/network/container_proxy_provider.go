@@ -184,6 +184,49 @@ func (p *ContainerProxyProvider) PrepareHost(ctx context.Context, spec HostNetwo
 	return nil
 }
 
+func (p *ContainerProxyProvider) RefreshHost(ctx context.Context, spec HostNetworkSpec) error {
+	if spec.Egress == nil {
+		p.logger.Info("container-proxy: no egress config, skipping refresh", "host_id", spec.HostID)
+		return nil
+	}
+
+	if spec.Egress.Proxy == nil {
+		p.logger.Warn("container-proxy: no proxy config, skipping network refresh", "host_id", spec.HostID)
+		return nil
+	}
+
+	hostID := spec.HostID
+	netName := networkName(hostID)
+	third := subnetThirdOctet(hostID)
+	bridgeGW := fmt.Sprintf("10.99.%d.1", third)
+	gwIP := fmt.Sprintf("10.99.%d.2", third)
+
+	if cpID, _ := os.Hostname(); cpID != "" {
+		if err := dockerNetworkConnect(ctx, netName, cpID, ""); err != nil {
+			if len(spec.PortMappings) > 0 {
+				return fmt.Errorf("gateway: connect control-plane to isolated network for port forwarding refresh: %w", err)
+			}
+			p.logger.Warn("container-proxy: connect control-plane to isolated network failed during refresh",
+				"host_id", hostID, "error", err)
+		}
+	}
+
+	if err := ensurePortMapChain(ctx); err != nil {
+		return fmt.Errorf("gateway: refresh portmap chain: %w", err)
+	}
+	if err := setupPortForwarding(ctx, hostID, bridgeGW, gwIP, spec.PortMappings); err != nil {
+		return fmt.Errorf("gateway: refresh port forwarding: %w", err)
+	}
+
+	p.logger.Info("container-proxy: host-side networking refreshed",
+		"host_id", hostID,
+		"network", netName,
+		"gateway_ip", gwIP,
+		"port_mappings", len(spec.PortMappings),
+	)
+	return nil
+}
+
 func (p *ContainerProxyProvider) CleanupHost(ctx context.Context, spec HostNetworkSpec) error {
 	p.teardownGateway(ctx, spec.HostID)
 	return nil

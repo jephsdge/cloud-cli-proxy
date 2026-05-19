@@ -58,7 +58,7 @@ func (m *mockInspector) InspectContainer(_ context.Context, name string) (agenta
 }
 
 func TestReconciler(t *testing.T) {
-	t.Run("Run_AllHealthy_NoUpdates", func(t *testing.T) {
+	t.Run("Run_AllHealthy_NoPeriodicNetworkRefresh", func(t *testing.T) {
 		store := &mockReconcileStore{
 			runningHosts: []repository.Host{
 				{ID: "h1"},
@@ -81,11 +81,100 @@ func TestReconciler(t *testing.T) {
 		if len(store.updatedHosts) != 0 {
 			t.Errorf("expected no host updates, got %d", len(store.updatedHosts))
 		}
-		if len(store.recordedEvents) != 0 {
-			t.Errorf("expected no events, got %d", len(store.recordedEvents))
-		}
 		if len(queuer.queuedActions) != 0 {
-			t.Errorf("expected no queued actions, got %d", len(queuer.queuedActions))
+			t.Errorf("expected no periodic refresh actions, got %d", len(queuer.queuedActions))
+		}
+		if len(store.recordedEvents) != 0 {
+			t.Errorf("expected no periodic refresh events, got %d", len(store.recordedEvents))
+		}
+	})
+
+	t.Run("RefreshRunningHostNetworks_QueuesPrepareHostOnce", func(t *testing.T) {
+		store := &mockReconcileStore{
+			runningHosts: []repository.Host{
+				{ID: "h1"},
+				{ID: "h2"},
+				{ID: "h3"},
+			},
+		}
+		inspector := &mockInspector{
+			results: map[string]agentapi.ContainerStatusResponse{
+				"cloudproxy-h1": {Exists: true, Running: true},
+				"cloudproxy-h2": {Exists: true, Running: false},
+				"cloudproxy-h3": {Exists: true, Running: true},
+			},
+		}
+		queuer := &mockQueuer{}
+		r := NewReconciler(slog.Default(), store, inspector, queuer, 10*time.Minute)
+
+		if err := r.RefreshRunningHostNetworks(context.Background()); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if len(queuer.queuedActions) != 2 {
+			t.Fatalf("expected 2 queued refresh actions, got %d", len(queuer.queuedActions))
+		}
+		for _, action := range queuer.queuedActions {
+			if action.Action != agentapi.ActionPrepareHost || action.RequestedBy != "system:startup" {
+				t.Errorf("queued = %+v, want prepare_host by system:startup", action)
+			}
+		}
+		if len(store.recordedEvents) != 2 {
+			t.Fatalf("expected 2 network refresh events, got %d", len(store.recordedEvents))
+		}
+		for _, ev := range store.recordedEvents {
+			if ev.Type != "reconcile.host.network_refresh" {
+				t.Errorf("event type = %q, want reconcile.host.network_refresh", ev.Type)
+			}
+		}
+	})
+
+	t.Run("RefreshRunningHostNetworksWithRetry_RetriesOnlyFailedHosts", func(t *testing.T) {
+		store := &mockReconcileStore{
+			runningHosts: []repository.Host{
+				{ID: "h1"},
+				{ID: "h2"},
+			},
+		}
+		inspector := &mockInspector{
+			results: map[string]agentapi.ContainerStatusResponse{
+				"cloudproxy-h1": {Exists: true, Running: true},
+				"cloudproxy-h2": {Exists: true, Running: true},
+			},
+		}
+		queuer := &mockQueuer{
+			failuresRemaining: map[string]int{"h1": 1},
+		}
+		r := NewReconciler(slog.Default(), store, inspector, queuer, 10*time.Minute)
+
+		if err := r.RefreshRunningHostNetworksWithRetry(context.Background(), 2, time.Nanosecond); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+
+		counts := map[string]int{}
+		for _, action := range queuer.queuedActions {
+			if action.Action != agentapi.ActionPrepareHost || action.RequestedBy != "system:startup" {
+				t.Errorf("queued = %+v, want prepare_host by system:startup", action)
+			}
+			counts[action.HostID]++
+		}
+		if counts["h1"] != 2 {
+			t.Errorf("h1 queued %d time(s), want 2", counts["h1"])
+		}
+		if counts["h2"] != 1 {
+			t.Errorf("h2 queued %d time(s), want 1", counts["h2"])
+		}
+
+		attemptByHost := map[string]int{}
+		for _, ev := range store.recordedEvents {
+			hostID, _ := ev.Metadata["host_id"].(string)
+			attempt, _ := ev.Metadata["attempt"].(int)
+			attemptByHost[hostID] = attempt
+		}
+		if attemptByHost["h1"] != 2 {
+			t.Errorf("h1 success attempt = %d, want 2", attemptByHost["h1"])
+		}
+		if attemptByHost["h2"] != 1 {
+			t.Errorf("h2 success attempt = %d, want 1", attemptByHost["h2"])
 		}
 	})
 

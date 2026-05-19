@@ -29,7 +29,7 @@ type Config struct {
 	Addr               string
 	DatabaseURL        string
 	MigrationDir       string
-	AdminUsername       string
+	AdminUsername      string
 	AdminPassword      string
 	AdminJWTSecret     string
 	ExpiryScanInterval time.Duration
@@ -141,31 +141,31 @@ func New(ctx context.Context, cfg Config) (*App, error) {
 	}
 
 	router := cphttp.NewRouter(cphttp.Dependencies{
-		Logger:         logger,
-		Health:         repo,
-		AgentHealth:    agentHealth,
-		Users:          repo,
-		Hosts:          repo,
-		HostActions:    runtimeService,
-		Tasks:          repo,
-		TasksHandler:   cphttp.NewTasksHandler(cphttp.TasksHandlerDependencies{Logger: logger, Tasks: repo}),
-		Admin:          adminCfg,
-		AuthStore:      repo,
-		DashboardStats: repo,
-		AdminUsers:     repo,
-		AdminEgressIPs: repo,
-		AdminBindings:  repo,
+		Logger:              logger,
+		Health:              repo,
+		AgentHealth:         agentHealth,
+		Users:               repo,
+		Hosts:               repo,
+		HostActions:         runtimeService,
+		Tasks:               repo,
+		TasksHandler:        cphttp.NewTasksHandler(cphttp.TasksHandlerDependencies{Logger: logger, Tasks: repo}),
+		Admin:               adminCfg,
+		AuthStore:           repo,
+		DashboardStats:      repo,
+		AdminUsers:          repo,
+		AdminEgressIPs:      repo,
+		AdminBindings:       repo,
 		AdminHosts:          repo,
 		AdminClaudeAccounts: repo, // Phase 33: 复用 Repository.BeginTx 满足 AdminClaudeAccountStore
 		AgentClient:         agentRunner,
 		AdminEvents:         repo,
 		EventRecorder:       repo,
-		EntryStore:     repo,
-		EntryBaseURL:   "",
-		ImageLockPath:  runtime.DefaultImageLockPath,
-		UserHosts:      repo,
-		SSHKeys:        repo,
-		ImageCache:     imageCache,
+		EntryStore:          repo,
+		EntryBaseURL:        "",
+		ImageLockPath:       runtime.DefaultImageLockPath,
+		UserHosts:           repo,
+		SSHKeys:             repo,
+		ImageCache:          imageCache,
 	})
 
 	var sshProxySrv *sshproxy.Server
@@ -251,6 +251,16 @@ func (a *App) Run(ctx context.Context) error {
 	cphttp.CleanupOrphanProbes(a.logger)
 
 	a.rejoinHostNetworks()
+	if a.reconciler != nil {
+		go func() {
+			if err := a.reconciler.RefreshRunningHostNetworksWithRetry(ctx, scheduler.StartupNetworkRefreshAttempts, scheduler.StartupNetworkRefreshDelay); err != nil {
+				if errors.Is(err, context.Canceled) {
+					return
+				}
+				a.logger.Warn("startup network refresh failed after retries", "error", err)
+			}
+		}()
+	}
 
 	if a.sshProxy != nil {
 		go func() {

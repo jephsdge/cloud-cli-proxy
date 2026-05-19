@@ -23,6 +23,11 @@ type ContainerInspector interface {
 	InspectContainer(context.Context, string) (agentapi.ContainerStatusResponse, error)
 }
 
+const (
+	StartupNetworkRefreshAttempts = 3
+	StartupNetworkRefreshDelay    = 30 * time.Second
+)
+
 type Reconciler struct {
 	logger         *slog.Logger
 	store          ReconcileStore
@@ -118,6 +123,107 @@ func (r *Reconciler) reconcileHosts(ctx context.Context) error {
 	}
 
 	return nil
+}
+
+// RefreshRunningHostNetworks restores volatile host-side networking for running
+// containers after the control-plane process restarts. It performs a single
+// attempt and is kept for tests/manual callers; production startup uses the
+// retrying wrapper below.
+func (r *Reconciler) RefreshRunningHostNetworks(ctx context.Context) error {
+	_, err := r.refreshRunningHostNetworks(ctx, nil, 1)
+	return err
+}
+
+// RefreshRunningHostNetworksWithRetry runs a bounded startup repair. Only hosts
+// that failed inspection or queueing are retried; healthy successes are not
+// touched again, so this does not become periodic network churn.
+func (r *Reconciler) RefreshRunningHostNetworksWithRetry(ctx context.Context, attempts int, delay time.Duration) error {
+	if attempts <= 0 {
+		attempts = 1
+	}
+	if delay < 0 {
+		delay = 0
+	}
+
+	var retryOnly map[string]struct{}
+	var lastErr error
+	for attempt := 1; attempt <= attempts; attempt++ {
+		failed, err := r.refreshRunningHostNetworks(ctx, retryOnly, attempt)
+		if err != nil {
+			lastErr = err
+		} else if len(failed) == 0 {
+			return nil
+		} else {
+			lastErr = fmt.Errorf("startup network refresh failed for %d host(s)", len(failed))
+			retryOnly = hostIDSet(failed)
+		}
+
+		if attempt == attempts {
+			break
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(delay):
+		}
+	}
+	return lastErr
+}
+
+func (r *Reconciler) refreshRunningHostNetworks(ctx context.Context, retryOnly map[string]struct{}, attempt int) ([]string, error) {
+	if r.queuer == nil {
+		return nil, nil
+	}
+	hosts, err := r.store.ListRunningHosts(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("list running hosts for network refresh: %w", err)
+	}
+
+	failed := make([]string, 0)
+	for _, host := range hosts {
+		if len(retryOnly) > 0 {
+			if _, ok := retryOnly[host.ID]; !ok {
+				continue
+			}
+		}
+		containerName := fmt.Sprintf("cloudproxy-%s", host.ID)
+		status, err := r.inspector.InspectContainer(ctx, containerName)
+		if err != nil {
+			r.logger.Warn("startup network refresh inspect failed, skipping host",
+				"host_id", host.ID, "container", containerName, "attempt", attempt, "error", err)
+			failed = append(failed, host.ID)
+			continue
+		}
+		if !status.Exists || !status.Running {
+			continue
+		}
+		if _, err := r.queuer.QueueHostAction(ctx, host.ID, agentapi.ActionPrepareHost, "system:startup"); err != nil {
+			r.logger.Warn("startup network refresh queue failed", "host_id", host.ID, "attempt", attempt, "error", err)
+			failed = append(failed, host.ID)
+			continue
+		}
+		r.store.RecordEvent(ctx, repository.RecordEventParams{
+			HostID:  &host.ID,
+			Level:   "info",
+			Type:    "reconcile.host.network_refresh",
+			Message: "控制面启动恢复运行中主机网络",
+			Metadata: map[string]any{
+				"operator":  "system:startup",
+				"db_status": "running",
+				"host_id":   host.ID,
+				"attempt":   attempt,
+			},
+		})
+	}
+	return failed, nil
+}
+
+func hostIDSet(hostIDs []string) map[string]struct{} {
+	out := make(map[string]struct{}, len(hostIDs))
+	for _, id := range hostIDs {
+		out[id] = struct{}{}
+	}
+	return out
 }
 
 func (r *Reconciler) recordHostDrift(ctx context.Context, hostID, actualStatus string) {

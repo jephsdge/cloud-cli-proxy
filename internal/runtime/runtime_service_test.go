@@ -192,3 +192,27 @@ func TestQueueHostAction_ResolveError_DoesNotBlockQueue(t *testing.T) {
 		t.Errorf("on resolve error, ClaudeAccountID must be empty, got %q", got.ClaudeAccountID)
 	}
 }
+
+func TestQueueHostAction_PrepareHostAllowsEmptyEntryPassword(t *testing.T) {
+	repo := &stubQueueRepo{
+		host: repository.Host{
+			ID:       "h1",
+			UserID:   "u1",
+			Status:   "running",
+			Hostname: "h1",
+		},
+		user: repository.User{ID: "u1", Username: "alice"},
+	}
+	svc, disp := newTestService(t, repo)
+
+	if _, err := svc.QueueHostAction(context.Background(), "h1", agentapi.ActionPrepareHost, "system:startup"); err != nil {
+		t.Fatalf("prepare_host must not require entry_password: %v", err)
+	}
+	got := disp.waitFor(t, 2*time.Second)
+	if got.Action != agentapi.ActionPrepareHost {
+		t.Fatalf("queued action = %s, want prepare_host", got.Action)
+	}
+	if got.EntryPassword != "" {
+		t.Fatalf("prepare_host should preserve empty entry password, got %q", got.EntryPassword)
+	}
+}

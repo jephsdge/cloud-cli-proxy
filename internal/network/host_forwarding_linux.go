@@ -49,6 +49,11 @@ func ensureHostMasquerade(ctx context.Context) error {
 //     each proxy listens in the host netns and forwards to the worker isolated IP,
 //     avoiding kernel-specific nat:PREROUTING behavior for locally-destined traffic.
 func setupPortForwarding(ctx context.Context, hostID, bridgeGW, gwIP string, ports []agentapi.PortMapping) error {
+	specs, err := portForwardSpecs(ports)
+	if err != nil {
+		return err
+	}
+
 	third := subnetThirdOctet(hostID)
 	workerIP := fmt.Sprintf("10.99.%d.3", third)
 	subnet := fmt.Sprintf("10.99.%d.0/24", third)
@@ -71,26 +76,16 @@ func setupPortForwarding(ctx context.Context, hostID, bridgeGW, gwIP string, por
 	// rules from older builds are removed above/below; only FORWARD allow rules
 	// remain so control-plane can reach worker isolated IPs.
 	deleteNatRulesByComment(ctx, "cloudproxy-snat-"+hostID)
-	for _, pm := range ports {
-		if pm.HostPort <= 0 || pm.ContainerPort <= 0 {
-			continue
-		}
-
-		proto := strings.ToLower(pm.Protocol)
-		if proto == "" {
-			proto = "tcp"
-		}
-
-		cp := strconv.Itoa(pm.ContainerPort)
-
+	for _, spec := range specs {
+		cp := strconv.Itoa(spec.workerPort)
 		// Allow control-plane/userland proxy traffic to worker isolated IP.
 		fwdRule := []string{
-			"-p", proto, "--dport", cp,
+			"-p", spec.protocol, "--dport", cp,
 			"-d", workerIP,
 			"-j", "ACCEPT",
 		}
 		if err := appendUniqueRule(ctx, "filter", hostChain, fwdRule); err != nil {
-			return fmt.Errorf("iptables FORWARD %s:%d: %w", workerIP, pm.ContainerPort, err)
+			return fmt.Errorf("iptables FORWARD %s:%d/%s: %w", workerIP, spec.workerPort, spec.protocol, err)
 		}
 	}
 

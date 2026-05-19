@@ -47,7 +47,8 @@ type mockQueuer struct {
 		Action      agentapi.HostAction
 		RequestedBy string
 	}
-	err error
+	err               error
+	failuresRemaining map[string]int
 }
 
 func (m *mockQueuer) QueueHostAction(_ context.Context, hostID string, action agentapi.HostAction, requestedBy string) (repository.Task, error) {
@@ -56,6 +57,10 @@ func (m *mockQueuer) QueueHostAction(_ context.Context, hostID string, action ag
 		Action      agentapi.HostAction
 		RequestedBy string
 	}{hostID, action, requestedBy})
+	if remaining := m.failuresRemaining[hostID]; remaining > 0 {
+		m.failuresRemaining[hostID] = remaining - 1
+		return repository.Task{}, errors.New("simulated queue failure")
+	}
 	return repository.Task{}, m.err
 }
 

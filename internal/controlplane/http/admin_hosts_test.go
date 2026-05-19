@@ -32,6 +32,7 @@ type stubHostStore struct {
 	timezoneErr   error
 	identity      repository.WorkerIdentity
 	identityErr   error
+	ports         repository.HostPorts
 }
 
 func (s *stubHostStore) ListHostsWithUsername(_ context.Context) ([]repository.HostWithUsername, error) {
@@ -78,7 +79,8 @@ func (s *stubHostStore) UpdateHostMounts(_ context.Context, _ string, _ reposito
 	return nil
 }
 
-func (s *stubHostStore) UpdateHostPorts(_ context.Context, _ string, _ repository.HostPorts) error {
+func (s *stubHostStore) UpdateHostPorts(_ context.Context, _ string, ports repository.HostPorts) error {
+	s.ports = ports
 	return nil
 }
 
@@ -254,6 +256,42 @@ func TestAdminHostsHandler(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestAdminHostsUpdatePortsQueuesRefreshForRunningHost(t *testing.T) {
+	store := &stubHostStore{
+		host: repository.Host{ID: "h1", Status: "running"},
+	}
+	queue := &stubQueuer{task: repository.Task{ID: "refresh-task"}}
+	handler := NewAdminHostsHandler(slog.Default(), store, queue, &stubEventRecorder{}, "").UpdatePorts()
+
+	body := `{"ports":[{"host_port":5353,"container_port":5353,"protocol":"UDP"}]}`
+	req := httptest.NewRequest("PUT", "/v1/admin/hosts/h1/ports", strings.NewReader(body))
+	req.SetPathValue("hostID", "h1")
+	rec := httptest.NewRecorder()
+
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != nethttp.StatusOK {
+		var respBody map[string]any
+		json.NewDecoder(rec.Body).Decode(&respBody)
+		t.Fatalf("status = %d, want 200; body = %v", rec.Code, respBody)
+	}
+	if len(store.ports) != 1 || store.ports[0].Protocol != "udp" {
+		t.Fatalf("stored ports = %#v, want normalized udp", store.ports)
+	}
+	if !queue.called || queue.calledAction != agentapi.ActionPrepareHost || queue.calledRequestedBy != "admin" {
+		t.Fatalf("queue = called:%v action:%v requested_by:%q, want prepare_host by admin",
+			queue.called, queue.calledAction, queue.calledRequestedBy)
+	}
+
+	var respBody map[string]any
+	if err := json.NewDecoder(rec.Body).Decode(&respBody); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if respBody["refresh_status"] != "queued" {
+		t.Fatalf("refresh_status = %v, want queued", respBody["refresh_status"])
 	}
 }
 

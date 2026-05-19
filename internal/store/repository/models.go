@@ -82,8 +82,8 @@ type HostMount struct {
 
 type HostMounts []HostMount
 
-// HostPort 描述宿主机端口到容器端口的映射，通过 docker create -p 生效。
-// 仅在重建（create/rebuild）时生效，运行时修改需重建主机。
+// HostPort 描述宿主机端口到容器端口的映射。
+// Linux 下由 control-plane userland proxy 刷新生效；非 Linux 下通过 docker create -p 生效。
 type HostPort struct {
 	HostPort      int    `json:"host_port"`
 	ContainerPort int    `json:"container_port"`

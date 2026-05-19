@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/zanel1u/cloud-cli-proxy/internal/agentapi"
+	"github.com/zanel1u/cloud-cli-proxy/internal/network"
 	"github.com/zanel1u/cloud-cli-proxy/internal/store/repository"
 )
 
@@ -66,23 +67,30 @@ func (fc *fakeContainer) runner(_ context.Context, _ string, script, stdin strin
 
 // fakeWorkerRepo 最小实现 WorkerRepo 接口，只记录 RecordEvent 参数。
 type fakeWorkerRepo struct {
-	events []repository.RecordEventParams
+	events        []repository.RecordEventParams
+	hostStatuses  []string
+	egressIP      repository.EgressIP
+	gatewayConfig json.RawMessage
 }
 
 func (r *fakeWorkerRepo) UpdateTaskStatus(_ context.Context, _, _, _, _, _ string) (repository.Task, error) {
 	return repository.Task{}, nil
 }
 
-func (r *fakeWorkerRepo) UpdateHostStatus(_ context.Context, _ string, _ string) error {
+func (r *fakeWorkerRepo) UpdateHostStatus(_ context.Context, _ string, status string) error {
+	r.hostStatuses = append(r.hostStatuses, status)
 	return nil
 }
 
 func (r *fakeWorkerRepo) GetEgressIPByHost(_ context.Context, _ string) (repository.EgressIP, error) {
+	if r.egressIP.ID != "" {
+		return r.egressIP, nil
+	}
 	return repository.EgressIP{}, nil
 }
 
 func (r *fakeWorkerRepo) GetHostGatewayConfig(_ context.Context, _ string) (json.RawMessage, error) {
-	return nil, nil
+	return r.gatewayConfig, nil
 }
 
 func (r *fakeWorkerRepo) RecordEvent(_ context.Context, params repository.RecordEventParams) (repository.Event, error) {
@@ -95,6 +103,24 @@ func (r *fakeWorkerRepo) UpsertClaudeAccountPersistentVolumeName(_ context.Conte
 }
 
 func (r *fakeWorkerRepo) ReportTaskProgress(_ context.Context, _ string, _ int, _ string) error {
+	return nil
+}
+
+type fakeNetworkProvider struct {
+	refreshErr error
+	refreshed  []network.HostNetworkSpec
+}
+
+func (p *fakeNetworkProvider) PrepareHost(_ context.Context, _ network.HostNetworkSpec) error {
+	return nil
+}
+
+func (p *fakeNetworkProvider) RefreshHost(_ context.Context, spec network.HostNetworkSpec) error {
+	p.refreshed = append(p.refreshed, spec)
+	return p.refreshErr
+}
+
+func (p *fakeNetworkProvider) CleanupHost(_ context.Context, _ network.HostNetworkSpec) error {
 	return nil
 }
 
