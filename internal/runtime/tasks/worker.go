@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -389,8 +390,107 @@ func workerContainerUser(request agentapi.HostActionRequest) string {
 	return firstNonEmpty(os.Getenv("CLOUD_CLI_PROXY_WORKER_USER"), request.DefaultUser, defaultWorkerUser)
 }
 
+func workerContainerUIDGID() (int, int, error) {
+	uid, err := parseWorkerIDEnv("CLOUD_CLI_PROXY_WORKER_UID", 1000)
+	if err != nil {
+		return 0, 0, err
+	}
+	gid, err := parseWorkerIDEnv("CLOUD_CLI_PROXY_WORKER_GID", 1000)
+	if err != nil {
+		return 0, 0, err
+	}
+	return uid, gid, nil
+}
+
+func parseWorkerIDEnv(name string, fallback int) (int, error) {
+	value := strings.TrimSpace(os.Getenv(name))
+	if value == "" {
+		return fallback, nil
+	}
+	parsed, err := strconv.Atoi(value)
+	if err != nil || parsed < 0 {
+		return 0, fmt.Errorf("%s must be a non-negative integer, got %q", name, value)
+	}
+	return parsed, nil
+}
+
+func prepareBindMountTargetParents(request agentapi.HostActionRequest, homeDir, homeMount string) error {
+	if len(request.BindMounts) == 0 {
+		return nil
+	}
+
+	uid, gid, err := workerContainerUIDGID()
+	if err != nil {
+		return err
+	}
+
+	cleanHomeDir := filepath.Clean(homeDir)
+	cleanHomeMount := filepath.Clean(homeMount)
+	if !filepath.IsAbs(cleanHomeMount) {
+		return nil
+	}
+
+	for _, bm := range request.BindMounts {
+		target := filepath.Clean(bm.Target)
+		if !filepath.IsAbs(target) {
+			continue
+		}
+
+		parent := filepath.Dir(target)
+		rel, err := filepath.Rel(cleanHomeMount, parent)
+		if err != nil {
+			continue
+		}
+		if rel == "." || rel == "" || rel == ".." || strings.HasPrefix(rel, ".."+string(os.PathSeparator)) || filepath.IsAbs(rel) {
+			continue
+		}
+
+		dir := cleanHomeDir
+		for _, part := range strings.Split(rel, string(os.PathSeparator)) {
+			if part == "" || part == "." {
+				continue
+			}
+			dir = filepath.Join(dir, part)
+			if err := mkdirAndChownBindTargetParent(dir, uid, gid); err != nil {
+				return fmt.Errorf("prepare bind mount target parent %s: %w", dir, err)
+			}
+		}
+	}
+
+	return nil
+}
+
+func mkdirAndChownBindTargetParent(dir string, uid, gid int) error {
+	info, err := os.Lstat(dir)
+	if err != nil {
+		if !os.IsNotExist(err) {
+			return err
+		}
+		if err := os.Mkdir(dir, 0o755); err != nil && !os.IsExist(err) {
+			return err
+		}
+		info, err = os.Lstat(dir)
+		if err != nil {
+			return err
+		}
+	}
+
+	if info.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("refusing to use symlink as bind mount target parent")
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("not a directory")
+	}
+
+	if err := os.Chown(dir, uid, gid); err != nil {
+		return err
+	}
+	return nil
+}
+
 func (w *Worker) createHost(ctx context.Context, request agentapi.HostActionRequest) error {
 	homeDir := firstNonEmpty(request.HomeDir, hostHomeDir(request.HostID))
+	homeMount := workerHomeMount(request)
 	sshHostKeysDir := hostSSHHostKeysDir(request)
 	containerName := firstNonEmpty(request.ContainerName, containerNameForHost(request.HostID))
 	if err := os.MkdirAll(homeDir, 0o755); err != nil {
@@ -474,6 +574,10 @@ func (w *Worker) createHost(ctx context.Context, request agentapi.HostActionRequ
 
 	args, err := w.buildCreateArgs(request, containerName, hostname)
 	if err != nil {
+		return err
+	}
+
+	if err := prepareBindMountTargetParents(request, homeDir, homeMount); err != nil {
 		return err
 	}
 

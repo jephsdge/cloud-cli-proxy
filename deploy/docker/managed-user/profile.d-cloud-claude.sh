@@ -7,6 +7,6 @@ case "$-" in
   *) return 0 2>/dev/null || exit 0 ;;
 esac
 
-alias ll='ls -alF --color=auto'
+alias ll='ls -lF --color=auto'
 alias la='ls -A --color=auto'
 alias l='ls -CF --color=auto'

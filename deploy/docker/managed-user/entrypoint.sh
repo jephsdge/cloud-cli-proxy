@@ -98,6 +98,20 @@ ensure_home_skeleton() {
     "${RUN_HOME}/.profile" 2>/dev/null || true
 }
 
+normalize_shell_aliases() {
+  for bashrc in /etc/skel/.bashrc "${RUN_HOME}/.bashrc"; do
+    [ -f "${bashrc}" ] || continue
+    sed -i \
+      -e "s/^alias ll='ls -alF'$/alias ll='ls -lF --color=auto'/" \
+      -e "s/^alias ll='ls -alF --color=auto'$/alias ll='ls -lF --color=auto'/" \
+      -e 's/^alias ll="ls -alF"$/alias ll="ls -lF --color=auto"/' \
+      -e 's/^alias ll="ls -alF --color=auto"$/alias ll="ls -lF --color=auto"/' \
+      "${bashrc}" 2>/dev/null || true
+  done
+
+  chown "${RUN_UID}:${RUN_GID}" "${RUN_HOME}/.bashrc" 2>/dev/null || true
+}
+
 cleanup_legacy_workspace_home() {
   if mountpoint -q /workspace 2>/dev/null; then
     echo "[entrypoint] /workspace is a mountpoint; keep it unchanged"
@@ -304,6 +318,7 @@ assert_tmux_version() {
 prepare_timezone
 ensure_runtime_user
 ensure_home_skeleton
+normalize_shell_aliases
 cleanup_legacy_workspace_home
 
 # SSH setup

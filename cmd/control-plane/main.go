@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 
 	"github.com/zanel1u/cloud-cli-proxy/internal/controlplane/app"
@@ -26,7 +27,7 @@ func main() {
 		SSHProxyAddr:              envOrDefault("SSH_PROXY_ADDR", ":2222"),
 		SSHProxyContainerUser:     envOrDefault("SSH_PROXY_CONTAINER_USER", envOrDefault("CLOUD_CLI_PROXY_WORKER_USER", "work")),
 		SSHProxyContainerPassword: envOrDefault("SSH_PROXY_CONTAINER_PASSWORD", "work"),
-		SSHProxyHostKeyPath:       envOrDefault("SSH_PROXY_HOST_KEY_PATH", "/var/lib/cloud-cli-proxy/ssh_host_ed25519_key"),
+		SSHProxyHostKeyPath:       envOrDefault("SSH_PROXY_HOST_KEY_PATH", defaultSSHProxyHostKeyPath()),
 	}
 
 	if cfg.DatabaseURL == "" {
@@ -56,4 +57,12 @@ func envOrDefault(key, fallback string) string {
 	}
 
 	return fallback
+}
+
+func defaultSSHProxyHostKeyPath() string {
+	dataDir := os.Getenv("DATA_DIR")
+	if dataDir == "" {
+		dataDir = "/var/lib/cloud-cli-proxy"
+	}
+	return filepath.Join(dataDir, "ssh-proxy", "ssh_host_ed25519_key")
 }

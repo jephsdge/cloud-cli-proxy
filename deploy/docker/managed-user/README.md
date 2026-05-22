@@ -20,7 +20,7 @@ Phase 2 只允许在这个模板旁边新增网络准备钩子接口，不在本
 
 - `restart-vnc`：重启 KasmVNC + 桌面进程（不重建容器）。
 - `claude`：受管 `claude code` 二进制，直接安装在 `/usr/local/bin/claude`，不再额外包装中转层。
-- `ll`：等价于 `ls -alF --color=auto`，同时在交互式 shell 中提供 `ll`/`la`/`l` alias。
+- `ll`：等价于 `ls -lF --color=auto`，默认不显示隐藏文件；同时在交互式 shell 中提供 `ll`/`la`/`l` alias。
 
 ## Worker 用户、Home、UID/GID
 
