@@ -1,6 +1,9 @@
 x-build-versions:
-  docker_cli_image: &docker_cli_image ${DOCKER_CLI_IMAGE:-docker:29-cli}
+  docker_cli_image:    &docker_cli_image    ${DOCKER_CLI_IMAGE:-docker:29-cli}
   claude_code_version: &claude_code_version ${CLAUDE_CODE_VERSION:-2.1.139}
+  node_version:        &node_version        ${NODE_VERSION:-22.14.0}
+  node_dist_url:       &node_dist_url       ${NODE_DIST_URL:-https://npmmirror.com/mirrors/node}
+  codex_version:       &codex_version       ${CODEX_VERSION:-0.134.0}
 
 services:
   control-plane:
@@ -56,6 +59,11 @@ services:
       dockerfile: deploy/docker/managed-user/Dockerfile
       args:
         CLAUDE_CODE_VERSION: *claude_code_version
+        NODE_VERSION:        *node_version
+        NODE_DIST_URL:       *node_dist_url
+        CODEX_VERSION:       *codex_version
+        NODE_SHA256_AMD64:   ${NODE_SHA256_AMD64:-69b09dba5c8dcb05c4e4273a4340db1005abeafe3927efda2bc5b249e80437ec}
+        NODE_SHA256_ARM64:   ${NODE_SHA256_ARM64:-08bfbf538bad0e8cbb0269f0173cca28d705874a67a22f60b57d99dc99e30050}
         CLOUD_CLI_PROXY_WORKER_EXTRA_APT_PACKAGES: ${CLOUD_CLI_PROXY_WORKER_EXTRA_APT_PACKAGES:-}
         NPM_CONFIG_REGISTRY: ${NPM_CONFIG_REGISTRY:-}
         HTTP_PROXY: ${HTTP_PROXY:-}

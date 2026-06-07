@@ -415,21 +415,6 @@ export function useClaudeStatus(hostId: string, enabled = true) {
   });
 }
 
-export function useUpdateClaude() {
-  const qc = useQueryClient();
-  return useMutation({
-    mutationFn: (hostId: string) =>
-      apiFetch<{ status: string; version: string }>(
-        `/hosts/${hostId}/claude/update`,
-        { method: "POST" },
-      ),
-    onSuccess: (_data, hostId) => {
-      qc.invalidateQueries({
-        queryKey: ["hosts", hostId, "claude-status"],
-      });
-    },
-  });
-}
 
 export interface HostImageInfo {
   container_image_id: string;

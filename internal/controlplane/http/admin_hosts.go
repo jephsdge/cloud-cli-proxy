@@ -999,61 +999,6 @@ done`
 	})
 }
 
-func (h *AdminHostsHandler) UpdateClaude() nethttp.Handler {
-	return nethttp.HandlerFunc(func(w nethttp.ResponseWriter, r *nethttp.Request) {
-		hostID := r.PathValue("hostID")
-
-		host, err := h.store.GetHost(r.Context(), hostID)
-		if err != nil {
-			if errors.Is(err, pgx.ErrNoRows) {
-				writeJSON(w, nethttp.StatusNotFound, map[string]string{"error": "host not found"})
-				return
-			}
-			h.logger.Error("get host for claude update failed", "host_id", hostID, "error", err)
-			writeJSON(w, nethttp.StatusInternalServerError, map[string]string{"error": "get host failed"})
-			return
-		}
-		if host.Status != "running" {
-			writeJSON(w, nethttp.StatusConflict, map[string]string{"error": "host is not running"})
-			return
-		}
-
-		containerName := "cloudproxy-" + hostID
-		ctx, cancel := context.WithTimeout(r.Context(), 120*time.Second)
-		defer cancel()
-
-		updateScript := `npm install -g @anthropic-ai/claude-code@latest 2>&1`
-		cmd := exec.CommandContext(ctx, "docker", "exec", "-i", containerName, "bash", "-c", updateScript)
-		output, err := cmd.CombinedOutput()
-		if err != nil {
-			h.logger.Error("update claude failed", "host_id", hostID, "error", err, "output", string(output))
-			writeJSON(w, nethttp.StatusBadGateway, map[string]string{"error": "update claude failed: " + strings.TrimSpace(string(output))})
-			return
-		}
-
-		versionCmd := exec.CommandContext(ctx, "docker", "exec", "-i", containerName,
-			"bash", "-c", "claude --version 2>/dev/null || echo unknown")
-		versionOut, _ := versionCmd.CombinedOutput()
-		version := strings.TrimSpace(string(versionOut))
-		if version == "" {
-			version = "unknown"
-		}
-
-		if h.events != nil {
-			if _, err := h.events.RecordEvent(r.Context(), repository.RecordEventParams{
-				HostID:   &hostID,
-				Level:    "info",
-				Type:     "admin.host.claude_updated",
-				Message:  "管理员更新容器 Claude Code",
-				Metadata: map[string]any{"operator": "admin", "version": version},
-			}); err != nil {
-				h.logger.Error("record event failed", "type", "admin.host.claude_updated", "error", err)
-			}
-		}
-
-		writeJSON(w, nethttp.StatusOK, map[string]any{"status": "ok", "version": version})
-	})
-}
 
 func (h *AdminHostsHandler) UpdateMounts() nethttp.Handler {
 	return nethttp.HandlerFunc(func(w nethttp.ResponseWriter, r *nethttp.Request) {

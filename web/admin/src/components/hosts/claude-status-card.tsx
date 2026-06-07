@@ -1,9 +1,8 @@
-import { RefreshCw, Download, Fingerprint } from "lucide-react";
+import { RefreshCw, Fingerprint } from "lucide-react";
 import { toast } from "sonner";
 import {
   useClaudeStatus,
   useClaudeInfo,
-  useUpdateClaude,
 } from "@/hooks/use-hosts";
 import type { ClaudeProcess } from "@/hooks/use-hosts";
 import { Badge } from "@/components/ui/badge";
@@ -145,19 +144,7 @@ export function ClaudeStatusCard({
     hostId,
     hostStatus === "running",
   );
-  const updateMutation = useUpdateClaude();
-
   if (hostStatus !== "running") return null;
-
-  function handleUpdate() {
-    updateMutation.mutate(hostId, {
-      onSuccess: (res) => {
-        toast.success(`Claude Code 已更新到 ${res.version}`);
-        refetch();
-      },
-      onError: () => toast.error("更新 Claude Code 失败"),
-    });
-  }
 
   return (
     <Card className="rounded-xl border-border/80 shadow-sm">
@@ -209,16 +196,6 @@ export function ClaudeStatusCard({
           >
             <RefreshCw className="h-3.5 w-3.5" />
             刷新
-          </Button>
-          <Button
-            variant="outline"
-            size="sm"
-            className="gap-1.5"
-            disabled={updateMutation.isPending}
-            onClick={handleUpdate}
-          >
-            <Download className="h-3.5 w-3.5" />
-            {updateMutation.isPending ? "更新中…" : "更新 Claude Code"}
           </Button>
         </div>
 

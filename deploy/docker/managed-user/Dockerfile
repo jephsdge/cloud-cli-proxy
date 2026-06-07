@@ -25,8 +25,6 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
         vim \
         curl \
         git \
-        nodejs \
-        npm \
         python3 \
         python3-venv \
         python3-pip \
@@ -54,6 +52,7 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
         sshfs \
         fuse3 \
         tini \
+        xz-utils \
     && if [ -n "${CLOUD_CLI_PROXY_WORKER_EXTRA_APT_PACKAGES}" ]; then \
         apt-get install -y --no-install-recommends ${CLOUD_CLI_PROXY_WORKER_EXTRA_APT_PACKAGES}; \
        fi \
@@ -63,6 +62,28 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
 
 RUN sed -i 's/^#user_allow_other/user_allow_other/' /etc/fuse.conf \
     && chmod a+r /etc/fuse.conf
+
+# Node.js 官方二进制（替代 apt nodejs，版本锁定可控）
+ARG NODE_VERSION=22.14.0
+ARG NODE_DIST_URL=https://npmmirror.com/mirrors/node
+ARG NODE_SHA256_AMD64=69b09dba5c8dcb05c4e4273a4340db1005abeafe3927efda2bc5b249e80437ec
+ARG NODE_SHA256_ARM64=08bfbf538bad0e8cbb0269f0173cca28d705874a67a22f60b57d99dc99e30050
+RUN ARCH=$(dpkg --print-architecture) \
+    && case "${ARCH}" in \
+         amd64) NODE_ARCH="x64";   EXPECTED_SHA="${NODE_SHA256_AMD64}" ;; \
+         arm64) NODE_ARCH="arm64"; EXPECTED_SHA="${NODE_SHA256_ARM64}" ;; \
+         *) echo "unsupported arch: ${ARCH}" >&2; exit 1 ;; \
+       esac \
+    && if [ -z "${EXPECTED_SHA}" ]; then \
+         echo "NODE sha256 not set for architecture: ${ARCH}" >&2; exit 1; \
+       fi \
+    && curl -fsSL -o /tmp/node.tar.xz \
+        "${NODE_DIST_URL}/v${NODE_VERSION}/node-v${NODE_VERSION}-linux-${NODE_ARCH}.tar.xz" \
+    && echo "${EXPECTED_SHA}  /tmp/node.tar.xz" | sha256sum -c - \
+    && tar -xJf /tmp/node.tar.xz -C /usr/local --strip-components=1 \
+    && rm /tmp/node.tar.xz \
+    && node --version \
+    && npm --version
 
 # KasmVNC：替代 x11vnc + noVNC + websockify + Xvfb，自带剪贴板同步和 Web 客户端。
 ARG KASMVNC_VERSION=1.4.0
@@ -104,10 +125,11 @@ RUN ARCH=$(dpkg --print-architecture) \
     && rm /tmp/mergerfs.deb \
     && mergerfs --version
 
-# 版本元数据（mergerfs / tmux 供控制面与诊断读取）
+# 版本元数据（mergerfs / tmux / node / codex 供控制面与诊断读取）
 RUN mkdir -p /etc/cloud-claude \
     && echo "${MERGERFS_VERSION}" > /etc/cloud-claude/mergerfs.version \
-    && echo "runtime-filled" > /etc/cloud-claude/tmux.version
+    && echo "runtime-filled"      > /etc/cloud-claude/tmux.version \
+    && node --version | tr -d 'v' > /etc/cloud-claude/node.version
 
 RUN locale-gen en_US.UTF-8
 ENV LANG=en_US.UTF-8
@@ -137,6 +159,15 @@ RUN set -eux; \
     fi; \
     claude --version; \
     claude --version | awk '{print $1}' > /etc/cloud-claude/claude-code.version
+
+# Codex CLI；固定版本，与 claude-code 保持同一管理风格。
+ARG CODEX_VERSION=0.134.0
+RUN set -eux; \
+    npm install -g --omit=dev --no-audit --no-fund "@openai/codex@${CODEX_VERSION}"; \
+    if ! command -v codex >/dev/null 2>&1; then \
+      echo "codex binary not found in PATH" >&2; exit 1; \
+    fi; \
+    echo "${CODEX_VERSION}" > /etc/cloud-claude/codex.version
 
 RUN mkdir -p "${WORKSPACE_HOME}/.ssh" /workspace /var/run/sshd \
     && chown -R "${WORKSPACE_UID}:${WORKSPACE_GID}" "${WORKSPACE_HOME}" /workspace \

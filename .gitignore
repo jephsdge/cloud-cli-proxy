@@ -58,3 +58,5 @@ docs/.vitepress/.temp/
 .cache
 
 runtime-data
+
+.ai
